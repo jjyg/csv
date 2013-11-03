@@ -96,9 +96,9 @@ public:
 		if ( nl )
 		{
 			line_start = buf + buf_cur;
-			line_length = nl - line_start;
+			line_length = nl + 1 - line_start;
 
-			buf_cur += line_length + 1;
+			buf_cur += line_length;
 			if (buf_cur > buf_end)
 				buf_cur = buf_end;	// just in case
 
@@ -211,6 +211,8 @@ public:
 	// invalidates previous read_csv_field pointers
 	bool read_line ( )
 	{
+		cur_field_offset = 0;
+
 		input_lines->read_line( cur_line, cur_line_length_nl );
 
 		if ( cur_line )
@@ -353,7 +355,7 @@ static void csv_extract( string &colname, istream &input )
 
 		while ( reader.read_csv_field( ptr, off, len ) )
 		{
-			fprintf(stdout, "f%d: %.*s\n", i, len, ptr+off);
+			fprintf(stdout, "f%d: %.*s\n", i++, len, ptr+off);
 		}
 		fprintf(stdout, "eol\n");
 	}

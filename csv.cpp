@@ -87,7 +87,10 @@ public:
 	// the returned pointers are only valid until the next call to read_line
 	void read_line ( char* &line_start, unsigned &line_length )
 	{
-		char *nl = (char*)memchr( (void*)(buf + buf_cur), '\n', buf_end - buf_cur );
+		char *nl = NULL;
+
+		if ( buf_cur < buf_end )
+			nl = (char*)memchr( (void*)(buf + buf_cur), '\n', buf_end - buf_cur );
 
 		// newline found ?
 		if ( nl )
@@ -105,8 +108,16 @@ public:
 		// end of file ?
 		if ( !input.good() )
 		{
-			line_start = buf + buf_cur;
-			line_length = buf_end - buf_cur;
+			if ( buf_cur < buf_end )
+			{
+				line_start = buf + buf_cur;
+				line_length = buf_end - buf_cur;
+			}
+			else
+			{
+				line_start = NULL;
+				line_length = 0;
+			}
 
 			buf_cur = buf_end;
 

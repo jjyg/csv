@@ -5,15 +5,12 @@
 #include <getopt.h>
 #include <iostream>
 #include <fstream>
-#include <tr1/unordered_map>
-
-using namespace std;
-using namespace std::tr1;
+#include <vector>
 
 class line_reader
 {
 private:
-	istream &input;
+	std::istream &input;
 
 	// maximum line length
 	unsigned buf_cur;
@@ -21,7 +18,7 @@ private:
 	unsigned buf_size;
 	char *buf;
 
-	// move buf_cur to buf_start, fill buf_end..buf_size with freshly read data
+	// memmove buf_cur to buf_start, fill buf_end..buf_size with freshly read data
 	void refill_buffer ( )
 	{
 		if ( buf_cur > 0 )
@@ -39,7 +36,7 @@ private:
 			input.read( buf + buf_end, buf_size - buf_end );
 			buf_end += input.gcount();
 			if (buf_end > buf_size)
-				buf_end = buf_cur;
+				buf_end = buf_cur;	// just in case
 		}
 	}
 
@@ -56,7 +53,7 @@ public:
 		return true;
 	}
 
-	explicit line_reader ( istream &is, unsigned line_max=1<<20 ) :
+	explicit line_reader ( std::istream &is, const unsigned line_max=1<<20 ) :
 		input(is),
 		buf_cur(0),
 		buf_end(0),
@@ -82,10 +79,10 @@ public:
 	// line_length includes the newline character(s)
 	// the line is not null-terminated
 	// internally, advances buf_cur to the beginning of next line
-	// returns line_start = NULL if no newline is found
+	// returns false iff line_start = NULL, happens after EOF or on lines > line_max
 	// eof is considered as a newline
-	// the returned pointers are only valid until the next call to read_line
-	void read_line ( char* &line_start, unsigned &line_length )
+	// the returned pointer is only valid until the next call to read_line
+	bool read_line ( char* &line_start, unsigned &line_length )
 	{
 		char *nl = NULL;
 
@@ -102,7 +99,7 @@ public:
 			if (buf_cur > buf_end)
 				buf_cur = buf_end;	// just in case
 
-			return;
+			return true;
 		}
 
 		// end of file ?
@@ -112,16 +109,17 @@ public:
 			{
 				line_start = buf + buf_cur;
 				line_length = buf_end - buf_cur;
+				buf_cur = buf_end;
+
+				return true;
 			}
 			else
 			{
 				line_start = NULL;
 				line_length = 0;
+
+				return false;
 			}
-
-			buf_cur = buf_end;
-
-			return;
 		}
 
 		// slide existing buffer, read more from input, and retry
@@ -141,7 +139,7 @@ public:
 		buf_end = 0;
 		refill_buffer();
 
-		return;
+		return false;
 	}
 };
 
@@ -186,7 +184,7 @@ public:
 	}
 
 	// line_max is passed to the line_reader, it is also the limit for a full csv row (that may span many lines)
-	explicit csv_reader ( istream &is, char sep=',', char quot='"', unsigned line_max=1<<20 ) :
+	explicit csv_reader ( std::istream &is, const char sep=',', const char quot='"', const unsigned line_max=1<<20 ) :
 		line_max(line_max),
 		line_copy(NULL),
 		sep(sep),
@@ -209,13 +207,12 @@ public:
 
 	// read one line from input_lines
 	// invalidates previous read_csv_field pointers
-	bool read_line ( )
+	// return false after EOF
+	bool next_line ( )
 	{
 		cur_field_offset = 0;
 
-		input_lines->read_line( cur_line, cur_line_length_nl );
-
-		if ( cur_line )
+		if ( input_lines->read_line( cur_line, cur_line_length_nl ) )
 		{
 			trim_newlines();
 			
@@ -242,11 +239,11 @@ public:
 		if ( cur_line[ cur_field_offset ] != quot )
 		{
 			// unquoted field
-			char *esep = (char*)memchr( (void*)(cur_line + cur_field_offset), sep, cur_line_length - cur_field_offset );
+			char *psep = (char*)memchr( (void*)(cur_line + cur_field_offset), sep, cur_line_length - cur_field_offset );
 
-			if ( esep )
+			if ( psep )
 			{
-				field_length = esep - (cur_line + cur_field_offset);
+				field_length = psep - (cur_line + cur_field_offset);
 				cur_field_offset += field_length + 1;
 			}
 			else
@@ -262,16 +259,16 @@ public:
 		field_length = 1;	// field length until now, including opening quote
 		while (1)
 		{
-			char *equot = NULL;
+			char *pquot = NULL;
 
 			if ( cur_field_offset + field_length < cur_line_length )
-				equot = (char*)memchr( (void*)(cur_line + cur_field_offset + field_length), quot,
+				pquot = (char*)memchr( (void*)(cur_line + cur_field_offset + field_length), quot,
 						cur_line_length - (cur_field_offset + field_length) );
 
-			if ( equot )
+			if ( pquot )
 			{
 				// found end quote
-				field_length = equot - (cur_line + cur_field_offset) + 1;
+				field_length = pquot - (cur_line + cur_field_offset) + 1;
 
 				if ( cur_field_offset + field_length < cur_line_length )
 				{
@@ -335,6 +332,152 @@ public:
 			}
 		}
 	}
+
+	// same as read_csv_field ( line_start, field_offset, field_length ) with simpler args
+	// returned values are only valid until the next call to this function (with the 3-args version, it is valid until next_line())
+	bool read_csv_field ( char* &field_start, unsigned &field_length )
+	{
+		char *line_start = NULL;
+		unsigned field_offset = 0;
+
+		if ( !read_csv_field( line_start, field_offset, field_length ) )
+			return false;
+
+		field_start = line_start + field_offset;
+
+		return true;
+	}
+
+	// return an unescaped csv field
+	// if unescaped is not NULL, fill it with unescaped data (data appended, string should be empty on call)
+	// if unescaped is NULL, and field has no escaped quote, only update field_start and field_length to reflect unescaped data (zero copy)
+	// if unescaped is NULL, and field has escaped quotes, allocate a new string and fill it with unescaped data. Caller should free it.
+	// returns a pointer to unescaped
+	// on return, if unescaped is not NULL, field_start and field_length are undefined.
+	std::string* unescape_csv_field ( char* &field_start, unsigned &field_length, std::string* unescaped )
+	{
+		if ( field_length <= 0 )
+			return unescaped;
+
+		if ( field_start[ 0 ] != quot )
+		{
+			if ( unescaped )
+				unescaped->append( field_start, field_length );
+
+			return unescaped;
+		}
+
+		field_start++;
+		field_length--;
+		field_length--;
+
+		while (1)
+		{
+			char *pquot = NULL;
+
+			if ( field_length > 0 )
+				pquot = (char*)memchr( (void*)field_start, quot, field_length );
+
+			if ( pquot )
+			{
+				// found quote: must be an escape
+				if ( ! unescaped )
+					unescaped = new std::string;
+
+				// append string start, including 1 quot
+				unescaped->append( field_start, pquot - field_start + 1 );
+				field_length -= pquot - field_start + 2;
+				field_start = pquot + 2;
+			}
+			else
+			{
+				if ( unescaped )
+					unescaped->append( field_start, field_length );
+
+				return unescaped;
+			}
+		}
+	}
+
+	// parse the current csv line (after a call to next_line())
+	// return a vector of unescaped strings
+	std::vector<std::string> *parse_line( )
+	{
+		std::vector<std::string> *vec = new std::vector<std::string>;
+		char *field_start = NULL;
+		unsigned field_length = 0;
+
+		while ( read_csv_field( field_start, field_length ) )
+		{
+			std::string unescaped;
+			unescape_csv_field( field_start, field_length, &unescaped );
+			vec->push_back( unescaped );
+		}
+
+		return vec;
+	}
+
+	// parse a colspec string (coma-separated list of column names), return a vector of indexes for those columns
+	// colspec is a coma-separated list of column names, or a coma-separated list of column indexes (numeric)
+	// colspec may include a range of columns, begin-end
+	// with named columns, 1st try is done with '-' as part of the column name, and then as a range separator
+	//
+	// if a column is not found, its index is set as -1. For ranges, assume a short range.
+	// if the csv has a header row, should be called with headers = parse_line()
+	// should be called on a new csv_parser, after the 1st call to next_line()
+	std::vector<int> *parse_colspec( const std::string &colspec_str, const std::vector<std::string> *headers )
+	{
+		std::vector<int> *indexes = new std::vector<int>;
+		int max_index = -1;
+
+		if ( headers )
+		{
+			max_index = headers->size();
+		}
+		else
+		{
+			// count columns on the 1st row
+			char *ptr = NULL;
+			unsigned len = 0;
+			while ( read_csv_field( ptr, len ) )
+				max_index++;
+
+			// reset internal ptr
+			cur_field_offset = 0;
+		}
+
+		// parse colspec_str: split on comas
+		std::vector<std::string> colspec_vec;
+		{
+			size_t off = 0, idx = -1;
+			while ( (idx = colspec_str.find( ',', off )) != std::string::npos )
+			{
+				colspec_vec.push_back( colspec_str.substr( off, idx-off ) );
+				off = idx + 1;
+			}
+			colspec_vec.push_back( colspec_str.substr( off ) );
+		}
+
+		for ( std::vector<std::string>::const_iterator spec_it = colspec_vec.begin() ; spec_it != colspec_vec.end() ; ++spec_it )
+		{
+			bool found = false;
+			if ( headers )
+			{
+				for ( std::vector<std::string>::const_iterator head_it = headers->begin() ; head_it != headers->end() ; ++head_it )
+				{
+					if ( ! strcasecmp( spec_it->c_str(), head_it->c_str() ) )
+					{
+						indexes->push_back( head_it - headers->begin() );
+						found = true;
+						break;
+					}
+				}
+				// TODO
+			}
+		}
+
+		return indexes;
+	}
 };
 
 static char *outfile = NULL;
@@ -342,11 +485,11 @@ static char sep = ',';
 static char quot = '"';
 static bool has_headerline = true;
 
-static void csv_extract( string &colname, istream &input )
+static void csv_extract( std::string &colname, std::istream &input )
 {
 	csv_reader reader( input, sep, quot );
 
-	while ( reader.read_line() )
+	while ( reader.next_line() )
 	{
 		char *ptr = NULL;
 		unsigned off = 0;
@@ -385,7 +528,7 @@ int main ( int argc, char * argv[] )
 		switch (opt)
 		{
 		case 'h':
-			cout << usage;
+			std::cerr << usage;
 			exit(EXIT_SUCCESS);
 
 		case 'o':
@@ -405,44 +548,44 @@ int main ( int argc, char * argv[] )
 			break;
 
 		default:
-			cerr << "Unknwon option: " << opt << endl << usage << endl;
+			std::cerr << "Unknwon option: " << opt << std::endl << usage << std::endl;
 			exit(EXIT_FAILURE);
 		}
 	}
 
 	if ( optind >= argc )
 	{
-		cerr << "No mode specified" << endl << usage << endl;
+		std::cerr << "No mode specified" << std::endl << usage << std::endl;
 		exit(EXIT_FAILURE);
 	}
 
-	string mode = argv[optind++];
+	std::string mode = argv[optind++];
 
 	if ( mode == "extract" )
 	{
 		if ( optind >= argc )
 		{
-			cerr << "No column specified" << endl << usage << endl;
+			std::cerr << "No column specified" << std::endl << usage << std::endl;
 			exit(EXIT_FAILURE);
 		}
-		string colname = argv[optind++];
+		std::string colname = argv[optind++];
 
 		if ( optind >= argc )
 		{
-			csv_extract( colname, cin );
+			csv_extract( colname, std::cin );
 		}
 		else
 		{
 			for ( int i = optind ; i<argc ; i++ )
 			{
-				ifstream in(argv[i]);
+				std::ifstream in(argv[i]);
 				csv_extract( colname, in );
 			}
 		}
 	}
 	else
 	{
-		cerr << "Unsupported mode " << mode << endl <<  usage << endl;
+		std::cerr << "Unsupported mode " << mode << std::endl << usage << std::endl;
 		exit(EXIT_FAILURE);
 	}
 

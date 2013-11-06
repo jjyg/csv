@@ -354,7 +354,7 @@ public:
 	// if unescaped is NULL, and field has escaped quotes, allocate a new string and fill it with unescaped data. Caller should free it.
 	// returns a pointer to unescaped
 	// on return, if unescaped is not NULL, field_start and field_length are undefined.
-	std::string* unescape_csv_field ( char* &field_start, unsigned &field_length, std::string* unescaped )
+	std::string* unescape_csv_field ( char* &field_start, unsigned &field_length, std::string* unescaped = NULL )
 	{
 		if ( field_length <= 0 )
 			return unescaped;
@@ -472,9 +472,16 @@ public:
 						break;
 					}
 				}
-				// TODO
+
+				if ( ! found )
+				{
+					// TODO
+					indexes->push_back( -1 );
+				}
 			}
 		}
+//for ( std::vector<std::string>::const_iterator head_it = headers->begin() ; head_it != headers->end() ; ++head_it ) { std::cout << "hdr " << *head_it << std::endl; }
+//for ( std::vector<int>::const_iterator ind_it = indexes->begin() ; ind_it != indexes->end() ; ++ind_it ) { std::cout << "idx " << *ind_it << std::endl; }
 
 		return indexes;
 	}
@@ -485,23 +492,58 @@ static char sep = ',';
 static char quot = '"';
 static bool has_headerline = true;
 
-static void csv_extract( std::string &colname, std::istream &input )
+static void csv_extract( std::string &colspec, std::istream &input )
 {
+	int target_col = -1;
 	csv_reader reader( input, sep, quot );
 
-	while ( reader.next_line() )
+	if ( has_headerline )
+	{
+		if ( ! reader.next_line() )
+		{
+			std::cerr << "Empty file" << std::endl;
+			return;
+		}
+
+		std::vector<std::string> *header = reader.parse_line();
+		std::vector<int> *indexes = reader.parse_colspec( colspec, header );
+		delete header;
+
+		if ( indexes->size() != 1 || indexes->at(0) < 0 )
+		{
+			std::cerr << "Invalid colspec" << std::endl;
+			delete indexes;
+			return;
+		}
+
+		target_col = indexes->at(0);
+		delete indexes;
+
+		if ( ! reader.next_line() )
+			return;
+	}
+
+	do
 	{
 		char *ptr = NULL;
-		unsigned off = 0;
 		unsigned len = 0;
-		int i = 0;
+		int cur = 0;
 
-		while ( reader.read_csv_field( ptr, off, len ) )
+		while ( reader.read_csv_field( ptr, len ) )
 		{
-			fprintf(stdout, "f%d: %.*s\n", i++, len, ptr+off);
+			if ( cur++ == target_col )
+			{
+				std::string *str = reader.unescape_csv_field( ptr, len );
+				if ( str )
+				{
+					ptr = (char *)str->data();
+					len = str->size();
+				}
+				printf("%.*s\n", len, ptr);
+			}
+			// cannot break as a later field may include a newline
 		}
-		fprintf(stdout, "eol\n");
-	}
+	} while ( reader.next_line() );
 }
 
 static const char *usage =
@@ -568,18 +610,18 @@ int main ( int argc, char * argv[] )
 			std::cerr << "No column specified" << std::endl << usage << std::endl;
 			exit(EXIT_FAILURE);
 		}
-		std::string colname = argv[optind++];
+		std::string colspec = argv[optind++];
 
 		if ( optind >= argc )
 		{
-			csv_extract( colname, std::cin );
+			csv_extract( colspec, std::cin );
 		}
 		else
 		{
 			for ( int i = optind ; i<argc ; i++ )
 			{
 				std::ifstream in(argv[i]);
-				csv_extract( colname, in );
+				csv_extract( colspec, in );
 			}
 		}
 	}

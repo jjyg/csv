@@ -174,7 +174,7 @@ public:
 	// return true if no more data is available from input_lines
 	bool eos ( )
 	{
-		if ( cur_field_offset < cur_line_length )
+		if ( cur_field_offset <= cur_line_length )
 			return false;
 
 		if ( !input_lines->eos() )
@@ -192,7 +192,7 @@ public:
 		cur_line(NULL),
 		cur_line_length(0),
 		cur_line_length_nl(0),
-		cur_field_offset(0)
+		cur_field_offset(1)
 	{
 		input_lines = new line_reader(is, line_max);
 	}
@@ -210,15 +210,15 @@ public:
 	// return false after EOF
 	bool next_line ( )
 	{
-		cur_field_offset = 0;
-
 		if ( input_lines->read_line( cur_line, cur_line_length_nl ) )
 		{
+			cur_field_offset = 0;
 			trim_newlines();
 			
 			return true;
 		}
 
+		cur_field_offset = 1;
 		cur_line_length = cur_line_length_nl = 0;
 
 		return false;
@@ -230,11 +230,20 @@ public:
 	// the 'field_offset' returned by previous calls for the same line is still valid relative to the new 'line_start' (which may change if one field crosses a line boundary, in that case the lines are copied into an internal buffer)
 	bool read_csv_field ( char* &line_start, unsigned &field_offset, unsigned &field_length )
 	{
-		if ( cur_field_offset >= cur_line_length )
+		if ( cur_field_offset > cur_line_length )
 			return false;
 
 		field_offset = cur_field_offset;
 		line_start = cur_line;
+
+		if ( cur_field_offset == cur_line_length )
+		{
+			// line ends in a coma
+			cur_field_offset++;
+			field_length = 0;
+
+			return true;
+		}
 
 		if ( cur_line[ cur_field_offset ] != quot )
 		{
@@ -249,7 +258,7 @@ public:
 			else
 			{
 				field_length = cur_line_length - cur_field_offset;
-				cur_field_offset = cur_line_length;
+				cur_field_offset += field_length + 1;
 			}
 
 			return true;
@@ -292,7 +301,7 @@ public:
 				}
 
 				// end quote was at end of line
-				cur_field_offset = cur_line_length;
+				cur_field_offset += field_length + 1;
 				return true;
 			}
 
@@ -327,7 +336,7 @@ public:
 			else
 			{
 				// reached end of input_lines / line_max with no end quote: return syntax error
-				cur_field_offset = cur_line_length;
+				cur_field_offset = cur_line_length + 1;
 				return false;
 			}
 		}
@@ -340,7 +349,7 @@ public:
 		char *line_start = NULL;
 		unsigned field_offset = 0;
 
-		if ( !read_csv_field( line_start, field_offset, field_length ) )
+		if ( ! read_csv_field( line_start, field_offset, field_length ) )
 			return false;
 
 		field_start = line_start + field_offset;

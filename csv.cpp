@@ -553,7 +553,7 @@ static bool has_headerline = true;
 
 static void csv_extract( std::string &colspec, std::istream &input )
 {
-	int target_col = -1;
+	std::vector<std::string> *headers = NULL;
 	csv_reader reader( input, sep, quot );
 
 	if ( has_headerline )
@@ -564,23 +564,30 @@ static void csv_extract( std::string &colspec, std::istream &input )
 			return;
 		}
 
-		std::vector<std::string> *header = reader.parse_line();
-		std::vector<int> *indexes = reader.parse_colspec( colspec, header );
-		delete header;
-
-		if ( indexes->size() != 1 || indexes->at(0) < 0 )
-		{
-			std::cerr << "Invalid colspec" << std::endl;
-			delete indexes;
-			return;
-		}
-
-		target_col = indexes->at(0);
-		delete indexes;
-
-		if ( ! reader.next_line() )
-			return;
+		headers = reader.parse_line();
 	}
+
+	if ( ! reader.next_line() )
+	{
+		if ( headers )
+			delete headers;
+		return;
+	}
+
+	std::vector<int> *indexes = reader.parse_colspec( colspec, headers );
+
+	if ( headers )
+		delete headers;
+
+	if ( indexes->size() != 1 || indexes->at(0) < 0 )
+	{
+		std::cerr << "Invalid colspec" << std::endl;
+		delete indexes;
+		return;
+	}
+
+	int target_col = indexes->at(0);
+	delete indexes;
 
 	do
 	{
@@ -598,10 +605,111 @@ static void csv_extract( std::string &colspec, std::istream &input )
 					ptr = (char *)str->data();
 					len = str->size();
 				}
-				printf("%.*s\n", len, ptr);
+				printf( "%.*s\n", len, ptr );
 			}
 			// cannot break as a later field may include a newline
 		}
+	} while ( reader.next_line() );
+}
+
+static void csv_select ( std::string &colspec, std::istream &input, bool show_headers )
+{
+	std::vector<std::string> *headers = NULL;
+	csv_reader reader( input, sep, quot );
+
+	if ( has_headerline )
+	{
+		if ( ! reader.next_line() )
+		{
+			std::cerr << "Empty file" << std::endl;
+			return;
+		}
+
+		headers = reader.parse_line();
+	}
+
+	if ( ! reader.next_line() )
+	{
+		// TODO should headers be shown if input has no rows ?
+		if ( headers )
+			delete headers;
+		return;
+	}
+
+	std::vector<int> *indexes = reader.parse_colspec( colspec, headers );
+
+	if ( show_headers && headers )
+	{
+		for ( unsigned i = 0 ; i < indexes->size() ; ++i )
+		{
+			int idx = indexes->at( i );
+
+			if ( idx == -1 )
+				continue;
+
+			// TODO re-escape ?
+			std::string &h = headers->at( indexes->at( i ) );
+			printf( "%.*s%c", h.size(), h.data(), (i == (indexes->size() - 1) ? '\n' : sep) );
+		}
+	}
+
+	if ( headers )
+		delete headers;
+
+	unsigned idx_len = indexes->size();
+	unsigned *fld_off = new unsigned[ idx_len ];
+	unsigned *fld_len = new unsigned[ idx_len ];
+
+	// inv[ input col idx ] = [ out col idx, out col idx ]
+	std::vector< std::vector<unsigned>* > inv_indexes;
+	for ( unsigned i = 0 ; i < idx_len ; ++i )
+	{
+		int idx = indexes->at( i );
+
+		if ( idx == -1 )
+			continue;
+
+		if ( inv_indexes.size() <= (unsigned)idx )
+			inv_indexes.resize( idx + 1 );
+
+		if ( ! inv_indexes[ idx ] )
+			inv_indexes[ idx ] = new std::vector<unsigned>;
+
+		inv_indexes[ idx ]->push_back( i );
+	}
+
+	do
+	{
+		char *line = NULL;
+
+		for ( unsigned i = 0 ; i < idx_len ; ++i )
+			fld_off[ i ] = (unsigned)-1;
+
+		unsigned f_off = 0, f_len = 0;
+		unsigned cur = 0;
+		while ( reader.read_csv_field( line, f_off, f_len ) )
+		{
+			if ( inv_indexes.size() > cur && inv_indexes[ cur ] )
+			{
+				for ( unsigned i = 0 ; i < inv_indexes[ cur ]->size() ; ++i )
+				{
+					unsigned ii = inv_indexes[ cur ]->at( i );
+					fld_off[ ii ] = f_off;
+					fld_len[ ii ] = f_len;
+				}
+			}
+			++cur;
+		}
+
+		for ( unsigned i = 0 ; i < idx_len ; ++i )
+		{
+			char fld_sep = ( i == idx_len - 1 ? '\n' : sep );
+			if ( fld_off[ i ] == (unsigned)-1 )
+				printf( "%c", fld_sep );
+			else
+				printf( "%.*s%c", fld_len[ i ],  line + fld_off[ i ], fld_sep );
+		}
+
 	} while ( reader.next_line() );
 }
 
@@ -630,7 +738,7 @@ int main ( int argc, char * argv[] )
 		{
 		case 'h':
 			std::cerr << usage;
-			exit(EXIT_SUCCESS);
+			exit( EXIT_SUCCESS );
 
 		case 'o':
 			outfile = optarg;
@@ -650,14 +758,14 @@ int main ( int argc, char * argv[] )
 
 		default:
 			std::cerr << "Unknwon option: " << opt << std::endl << usage << std::endl;
-			exit(EXIT_FAILURE);
+			exit( EXIT_FAILURE );
 		}
 	}
 
 	if ( optind >= argc )
 	{
 		std::cerr << "No mode specified" << std::endl << usage << std::endl;
-		exit(EXIT_FAILURE);
+		exit( EXIT_FAILURE );
 	}
 
 	std::string mode = argv[optind++];
@@ -667,9 +775,9 @@ int main ( int argc, char * argv[] )
 		if ( optind >= argc )
 		{
 			std::cerr << "No column specified" << std::endl << usage << std::endl;
-			exit(EXIT_FAILURE);
+			exit( EXIT_FAILURE );
 		}
-		std::string colspec = argv[optind++];
+		std::string colspec = argv[ optind++ ];
 
 		if ( optind >= argc )
 		{
@@ -677,7 +785,7 @@ int main ( int argc, char * argv[] )
 		}
 		else
 		{
-			for ( int i = optind ; i<argc ; ++i )
+			for ( int i = optind ; i < argc ; ++i )
 			{
 				std::ifstream in(argv[i]);
 				csv_extract( colspec, in );
@@ -685,10 +793,35 @@ int main ( int argc, char * argv[] )
 		}
 	}
 	else
+	if ( mode == "select" )
+	{
+		if ( optind >= argc )
+		{
+			std::cerr << "No column specified" << std::endl << usage << std::endl;
+			exit( EXIT_FAILURE );
+		}
+		std::string colspec = argv[ optind++ ];
+
+		if ( optind >= argc )
+		{
+			csv_select( colspec, std::cin, true );
+		}
+		else
+		{
+			bool show_header = true;
+			for ( int i = optind ; i < argc ; ++i )
+			{
+				std::ifstream in(argv[i]);
+				csv_select( colspec, in, show_header );
+				show_header = false;
+			}
+		}
+	}
+	else
 	{
 		std::cerr << "Unsupported mode " << mode << std::endl << usage << std::endl;
-		exit(EXIT_FAILURE);
+		exit( EXIT_FAILURE );
 	}
 
-	exit(EXIT_SUCCESS);
+	exit( EXIT_SUCCESS );
 }

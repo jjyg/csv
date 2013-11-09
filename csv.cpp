@@ -584,6 +584,30 @@ public:
 		}
 	}
 
+	// return the escaped version of an unescaped string
+	std::string escape_csv_field ( const std::string &str )
+	{
+		std::string ret;
+
+		ret.push_back( quot );
+
+		size_t last = 0, next = str.find( quot );
+		while ( next != std::string::npos )
+		{
+			ret.append( str.substr( last, next-last ) );
+			ret.push_back( quot );
+			ret.push_back( quot );
+
+			last = next + 1;
+			next = str.find( quot, last );
+		}
+
+		ret.append( str.substr( last ) );
+		ret.push_back( quot );
+
+		return ret;
+	}
+
 	// parse the current csv line (after a call to fetch_line())
 	// return a pointer to a vector of unescaped strings, should be delete by caller
 	std::vector<std::string>* parse_line( )
@@ -807,8 +831,7 @@ static void csv_select ( const std::string &colspec, const char *filename, bool 
 			if ( idx_in == -1 )
 				continue;
 
-			// TODO re-escape ?
-			outbuf->append( headers->at( idx_in ) );
+			outbuf->append( reader.escape_csv_field( headers->at( idx_in ) ) );
 			if ( i < indexes.size() - 1 )
 				outbuf->append( sep );
 		}

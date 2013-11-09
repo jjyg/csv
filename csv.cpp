@@ -170,6 +170,35 @@ private:
 			cur_line_length--;
 	}
 
+	// return the index of the string str in the string vector headers (case insensitive)
+	// checks for numeric indexes if not found (decimal, [0-9]+), <= max_index
+	// return -1 if not found
+	int parse_index_uint( const std::string &str, const std::vector<std::string> *headers, int max_index )
+	{
+		if ( str.size() == 0 )
+			return -1;
+
+		if ( headers )
+			for ( std::vector<std::string>::const_iterator head_it = headers->begin() ; head_it != headers->end() ; ++head_it )
+				if ( ! strcasecmp( str.c_str(), head_it->c_str() ) )
+					return head_it - headers->begin();
+
+		int ret = 0;
+
+		for ( unsigned i = 0 ; i < str.size() ; ++i )
+		{
+			if ( str[i] < '0' || str[i] > '9' )
+				return -1;
+
+			ret = ret * 10 + (str[i] - '0');
+		}
+
+		if ( ret > max_index )
+			return -1;
+
+		return ret;
+	}
+
 public:
 	// return true if no more data is available from input_lines
 	bool eos ( )
@@ -239,7 +268,7 @@ public:
 		if ( cur_field_offset == cur_line_length )
 		{
 			// line ends in a coma
-			cur_field_offset++;
+			++cur_field_offset;
 			field_length = 0;
 
 			return true;
@@ -291,7 +320,7 @@ public:
 					if ( cur_line[ cur_field_offset + field_length ] == quot )
 					{
 						// escaped quote
-						field_length++;
+						++field_length;
 						continue;
 					}
 
@@ -376,9 +405,9 @@ public:
 			return unescaped;
 		}
 
-		field_start++;
-		field_length--;
-		field_length--;
+		++field_start;
+		--field_length;
+		--field_length;
 
 		while (1)
 		{
@@ -427,11 +456,10 @@ public:
 	}
 
 	// parse a colspec string (coma-separated list of column names), return a vector of indexes for those columns
-	// colspec is a coma-separated list of column names, or a coma-separated list of column indexes (numeric)
-	// colspec may include a range of columns, begin-end
-	// with named columns, 1st try is done with '-' as part of the column name, and then as a range separator
+	// colspec is a coma-separated list of column names, or a coma-separated list of column indexes (numeric, 0-based)
+	// colspec may include ranges of columns, with "begin-end". Omit "begin" to start at 0, omit "end" to finish at last column
 	//
-	// if a column is not found, its index is set as -1. For ranges, assume a short range.
+	// if a column is not found, its index is set as -1. For ranges, if begin or end is not found, add a single -1 index.
 	// if the csv has a header row, should be called with headers = parse_line()
 	// should be called on a new csv_parser, after the 1st call to next_line()
 	std::vector<int> *parse_colspec( const std::string &colspec_str, const std::vector<std::string> *headers )
@@ -439,9 +467,10 @@ public:
 		std::vector<int> *indexes = new std::vector<int>;
 		int max_index = -1;
 
+		// find max_index
 		if ( headers )
 		{
-			max_index = headers->size();
+			max_index = headers->size() - 1;
 		}
 		else
 		{
@@ -449,9 +478,9 @@ public:
 			char *ptr = NULL;
 			unsigned len = 0;
 			while ( read_csv_field( ptr, len ) )
-				max_index++;
+				++max_index;
 
-			// reset internal ptr
+			// reset internal ptr for subsequent read_csv_fields
 			cur_field_offset = 0;
 		}
 
@@ -467,25 +496,46 @@ public:
 			colspec_vec.push_back( colspec_str.substr( off ) );
 		}
 
+		// generate indexes, handle ranges in colspec_vec
 		for ( std::vector<std::string>::const_iterator spec_it = colspec_vec.begin() ; spec_it != colspec_vec.end() ; ++spec_it )
 		{
-			bool found = false;
-			if ( headers )
+			int idx = parse_index_uint( *spec_it, headers, max_index );
+
+			if ( idx != -1 )
+				indexes->push_back( idx );
+			else
 			{
-				for ( std::vector<std::string>::const_iterator head_it = headers->begin() ; head_it != headers->end() ; ++head_it )
+				// check for ranges
+				// handle col names including '-'
+				size_t dash_off = -1;
+
+				while (1)
 				{
-					if ( ! strcasecmp( spec_it->c_str(), head_it->c_str() ) )
+					dash_off = spec_it->find( '-', dash_off + 1 );
+					if ( dash_off == std::string::npos )
 					{
-						indexes->push_back( head_it - headers->begin() );
-						found = true;
+						indexes->push_back( -1 );
 						break;
 					}
-				}
 
-				if ( ! found )
-				{
-					// TODO
-					indexes->push_back( -1 );
+					int min, max;
+					if ( dash_off == 0 )
+						min = 0;
+					else
+						min = parse_index_uint( spec_it->substr( 0, dash_off ), headers, max_index );
+
+					if ( dash_off == spec_it->size() - 1 )
+						max = max_index;
+					else
+						max = parse_index_uint( spec_it->substr( dash_off + 1 ), headers, max_index );
+
+					if ( min != -1 && max != -1 )
+					{
+						for ( int i = min ; i <= max ; ++i )
+							indexes->push_back( i );
+
+						break;
+					}
 				}
 			}
 		}
@@ -627,7 +677,7 @@ int main ( int argc, char * argv[] )
 		}
 		else
 		{
-			for ( int i = optind ; i<argc ; i++ )
+			for ( int i = optind ; i<argc ; ++i )
 			{
 				std::ifstream in(argv[i]);
 				csv_extract( colspec, in );

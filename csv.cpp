@@ -6,23 +6,7 @@
 #include <iostream>
 #include <fstream>
 #include <vector>
-#include <exception>
-
-struct badfile : std::exception
-{
-	char buf[256];
-
-	explicit badfile( const char *filename )
-	{
-		snprintf( buf, 256, "cannot open %s: %m\n", filename );
-		buf[ 255 ] = 0;
-	}
-
-	const char *what()
-	{
-		return buf;
-	}
-};
+#include <errno.h>
 
 // wraps an istream, provide an efficient interface to read lines
 class line_reader
@@ -30,6 +14,7 @@ class line_reader
 private:
 	std::istream *input;
 	bool should_delete_input;
+	bool badfile;
 
 	// maximum line length
 	unsigned buf_cur;
@@ -60,6 +45,11 @@ private:
 	}
 
 public:
+	bool failed_to_open ( )
+	{
+		return badfile;
+	}
+
 	// return true if no more data is available from input
 	bool eos ( )
 	{
@@ -73,6 +63,7 @@ public:
 	}
 
 	explicit line_reader ( const char *filename, const unsigned line_max = 1024*1024 ) :
+		badfile(false),
 		buf_cur(0),
 		buf_end(0),
 		buf_size(line_max)
@@ -84,7 +75,10 @@ public:
 			should_delete_input = true;
 			input = new std::ifstream(filename);
 			if ( ! *input )
-				throw badfile( filename ? filename : "<stdin>" );
+			{
+				badfile = true;
+				return;
+			}
 		}
 		else
 		{
@@ -186,12 +180,18 @@ class output_buffer
 private:
 	std::ostream *output;
 	bool should_delete_output;
+	bool badfile;
 
 	unsigned buf_end;
 	unsigned buf_size;
 	char *buf;
 
 public:
+	bool failed_to_open ( )
+	{
+		return badfile;
+	}
+
 	void flush ( )
 	{
 		if ( buf_end > 0 )
@@ -247,6 +247,7 @@ public:
 	}
 
 	explicit output_buffer ( const char *filename, const unsigned buf_size = 64*1024 ) :
+		badfile(false),
 		buf_end(0),
 		buf_size(buf_size)
 	{
@@ -257,7 +258,10 @@ public:
 			should_delete_output = true;
 			output = new std::ofstream(filename);
 			if ( ! *output )
-				throw badfile( filename ? filename : "<stdout>" );
+			{
+				badfile = true;
+				return;
+			}
 		}
 		else
 		{
@@ -338,6 +342,11 @@ private:
 	}
 
 public:
+	bool failed_to_open ( )
+	{
+		return input_lines->failed_to_open();
+	}
+
 	// return true if no more data is available from input_lines
 	bool eos ( )
 	{
@@ -698,6 +707,12 @@ static void csv_extract( const std::string &colspec, const char *filename )
 	std::vector<std::string> *headers = NULL;
 	csv_reader reader( filename, sep, quot );
 
+	if ( reader.failed_to_open() )
+	{
+		std::cerr << "Cannot open " << (filename ? filename : "<stdin>") << ": " << strerror( errno ) << std::endl;
+		return;
+	}
+
 	if ( has_headerline )
 	{
 		if ( ! reader.fetch_line() )
@@ -755,6 +770,12 @@ static void csv_select ( const std::string &colspec, const char *filename, bool 
 {
 	std::vector<std::string> *headers = NULL;
 	csv_reader reader( filename, sep, quot );
+
+	if ( reader.failed_to_open() )
+	{
+		std::cerr << "Cannot open " << (filename ? filename : "<stdin>") << ": " << strerror( errno ) << std::endl;
+		return;
+	}
 
 	if ( has_headerline )
 	{
@@ -919,6 +940,13 @@ int main ( int argc, char * argv[] )
 	}
 
 	output_buffer local_outbuf( outfile );
+
+	if ( local_outbuf.failed_to_open() )
+	{
+		std::cerr << "Cannot open " << (outfile ? outfile : "<stdout>") << ": " << strerror( errno ) << std::endl;
+		return EXIT_FAILURE;
+	}
+
 	outbuf = &local_outbuf;
 
 	std::string mode = argv[optind++];

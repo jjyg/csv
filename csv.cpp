@@ -45,13 +45,13 @@ private:
 	}
 
 public:
-	bool failed_to_open ( )
+	bool failed_to_open ( ) const
 	{
 		return badfile;
 	}
 
 	// return true if no more data is available from input
-	bool eos ( )
+	bool eos ( ) const
 	{
 		if ( input->good() )
 			return false;
@@ -187,7 +187,7 @@ private:
 	char *buf;
 
 public:
-	bool failed_to_open ( )
+	bool failed_to_open ( ) const
 	{
 		return badfile;
 	}
@@ -213,6 +213,7 @@ public:
 				memcpy( buf + buf_end, s, buf_size - buf_end );
 			output->write( buf, buf_size );
 			len_left -= buf_size - buf_end;
+			s += buf_size - buf_end;
 			buf_end = 0;
 		}
 
@@ -315,7 +316,7 @@ private:
 	// return the index of the string str in the string vector headers (case insensitive)
 	// checks for numeric indexes if not found (decimal, [0-9]+), <= max_index
 	// return -1 if not found
-	int parse_index_uint( const std::string &str, const std::vector<std::string> *headers, const int max_index )
+	int parse_index_uint( const std::string &str, const std::vector<std::string> *headers, const int max_index ) const
 	{
 		if ( str.size() == 0 )
 			return -1;
@@ -342,13 +343,13 @@ private:
 	}
 
 public:
-	bool failed_to_open ( )
+	bool failed_to_open ( ) const
 	{
 		return input_lines->failed_to_open();
 	}
 
 	// return true if no more data is available from input_lines
-	bool eos ( )
+	bool eos ( ) const
 	{
 		if ( cur_field_offset <= cur_line_length )
 			return false;
@@ -539,7 +540,7 @@ public:
 	// if unescaped is NULL, and field has escaped quotes, allocate a new string and fill it with unescaped data. Caller should free it.
 	// returns a pointer to unescaped
 	// on return, if unescaped is not NULL, field_start and field_length are undefined.
-	std::string* unescape_csv_field ( char* *field_start, unsigned *field_length, std::string* unescaped = NULL )
+	std::string* unescape_csv_field ( char* *field_start, unsigned *field_length, std::string* unescaped = NULL ) const
 	{
 		if ( *field_length <= 0 )
 			return unescaped;
@@ -585,7 +586,7 @@ public:
 	}
 
 	// return the escaped version of an unescaped string
-	std::string escape_csv_field ( const std::string &str )
+	std::string escape_csv_field ( const std::string &str ) const
 	{
 		std::string ret;
 
@@ -632,7 +633,7 @@ public:
 	//
 	// if a column is not found, its index is set as -1. For ranges, if begin or end is not found, add a single -1 index.
 	// if the csv has a header row, should be called with headers = parse_line()
-	// should be called on a new csv_parser, after the 1st call to fetch_line()
+	// without a header list, the current line is parsed and reset to count the fields per row
 	std::vector<int> parse_colspec( const std::string &colspec_str, const std::vector<std::string> *headers )
 	{
 		std::vector<int> indexes;
@@ -812,13 +813,7 @@ static void csv_select ( const std::string &colspec, const char *filename, bool 
 		headers = reader.parse_line();
 	}
 
-	if ( ! reader.fetch_line() )
-	{
-		// TODO should headers be shown if input has no rows ?
-		if ( headers )
-			delete headers;
-		return;
-	}
+	reader.fetch_line();
 
 	std::vector<int> indexes = reader.parse_colspec( colspec, headers );
 
@@ -840,6 +835,9 @@ static void csv_select ( const std::string &colspec, const char *filename, bool 
 
 	if ( headers )
 		delete headers;
+
+	if ( reader.eos() )
+		return;
 
 	unsigned idx_len = indexes.size();
 	unsigned *fld_off = new unsigned[ idx_len ];
@@ -904,6 +902,9 @@ static void csv_select ( const std::string &colspec, const char *filename, bool 
 	for ( unsigned idx_out = 0 ; idx_out < idx_len ; ++idx_out )
 		if ( inv_indexes[ idx_out ] )
 			delete inv_indexes[ idx_out ];
+
+	delete[] fld_off;
+	delete[] fld_len;
 }
 
 static const char *usage =

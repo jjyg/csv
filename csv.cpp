@@ -7,9 +7,7 @@
 #include <fstream>
 #include <vector>
 #include <errno.h>
-#ifndef NO_REGEXP
 #include <regex.h>
-#endif
 
 // wraps an istream, provide an efficient interface to read lines
 class line_reader
@@ -73,15 +71,27 @@ public:
 	{
 		buf = new char[buf_size];
 
-		if ( filename )
+		if ( filename && filename[ 0 ] == '-' && filename[ 1 ] == 0 )
+		{
+			should_delete_input = false;
+			input = &std::cin;
+		}
+		else if ( filename )
 		{
 			should_delete_input = true;
 			input = new std::ifstream(filename);
 			if ( ! *input )
 			{
+				std::cerr << "Cannot open " << filename << ": " << strerror( errno ) << std::endl;
 				badfile = true;
 				return;
 			}
+		}
+		else if ( isatty( 0 ) )
+		{
+			std::cerr << "Won't read from <stdin>, is a tty. To force, use '-'." << std::endl;
+			badfile = true;
+			return;
 		}
 		else
 		{
@@ -164,6 +174,9 @@ public:
 		// no newline in whole buffer
 		*line_start = NULL;
 		*line_length = 0;
+
+		std::string sample( buf, 64 );
+		std::cerr << "Line too long, near '" << sample << "'" << std::endl;
 
 		// slide buffer anyway, to avoid infinite loop in badly written clients
 		buf_cur = 0;
@@ -263,6 +276,7 @@ public:
 			output = new std::ofstream(filename);
 			if ( ! *output )
 			{
+				std::cerr << "Cannot open " << filename << ": " << strerror( errno ) << std::endl;
 				badfile = true;
 				return;
 			}
@@ -295,6 +309,7 @@ private:
 	line_reader *input_lines;
 	unsigned line_max;
 	char *line_copy;
+	bool failed;
 
 	char sep;
 	char quot;
@@ -325,6 +340,9 @@ public:
 	// return true if no more data is available from input_lines
 	bool eos ( ) const
 	{
+		if ( failed )
+			return true;
+
 		if ( cur_field_offset <= cur_line_length )
 			return false;
 
@@ -344,6 +362,7 @@ public:
 	explicit csv_reader ( const char *filename, const char sep = ',', const char quot = '"', const unsigned line_max = 1024*1024 ) :
 		line_max(line_max),
 		line_copy(NULL),
+		failed(false),
 		sep(sep),
 		quot(quot),
 		cur_line(NULL),
@@ -367,6 +386,9 @@ public:
 	// return false after EOF
 	bool fetch_line ( )
 	{
+		if ( failed )
+			return false;
+
 		if ( input_lines->read_line( &cur_line, &cur_line_length_nl ) )
 		{
 			cur_field_offset = 0;
@@ -375,6 +397,7 @@ public:
 			return true;
 		}
 
+		failed = true;
 		cur_field_offset = 1;
 		cur_line_length = cur_line_length_nl = 0;
 
@@ -387,6 +410,9 @@ public:
 	// the 'field_offset' returned by previous calls for the same line is still valid relative to the new 'line_start' (which may change if one field crosses a line boundary, in that case the lines are copied into an internal buffer)
 	bool read_csv_field ( char* *line_start, unsigned *field_offset, unsigned *field_length )
 	{
+		if ( failed )
+			return false;
+
 		if ( cur_field_offset > cur_line_length )
 			return false;
 
@@ -493,6 +519,16 @@ public:
 			else
 			{
 				// reached end of input_lines / line_max with no end quote: return syntax error
+				if ( next_line )
+				{
+					std::string sample( cur_line, 64 );
+					std::cerr << "Csv row too long (maybe unclosed quote?) near '" << sample << "'" << std::endl;
+				}
+
+				if ( ! input_lines->eos() )
+					std::cerr << "Ignoring end of file" << std::endl;
+
+				failed = true;
 				cur_field_offset = cur_line_length + 1;
 				return false;
 			}
@@ -810,7 +846,6 @@ private:
 
 		if ( reader->failed_to_open() )
 		{
-			std::cerr << "Cannot open " << (filename ? filename : "<stdin>") << ": " << strerror( errno ) << std::endl;
 			cleanup();
 			return false;
 		}
@@ -827,12 +862,12 @@ private:
 			headers = reader->parse_line();
 		}
 
-		reader->fetch_line();
+		bool retval = reader->fetch_line();
 		count_max_index();
 
 		parse_colspec( colspec );
 
-		return true;
+		return retval;
 	}
 
 	// split a string "k1=v1,k2=v2,k3=v3" into vectors [k1, k2, k3] and [v1, v2, v3]
@@ -1088,7 +1123,6 @@ public:
 		} while ( reader->fetch_line() );
 	}
 
-#ifndef NO_REGEXP
 	// filter csv, display only lines whose field value match a regexp
 	void grepcol ( const std::string &colval, const char *filename )
 	{
@@ -1121,7 +1155,7 @@ public:
 			{
 				char errbuf[1024];
 				regerror( err, &vals_re[ i ], errbuf, sizeof(errbuf) );
-				std::cerr << "Invalid regexp: " << errbuf << std::endl;
+				std::cerr << "Invalid regexp /" << vals[ i ] << "/ : " << errbuf << std::endl;
 
 				for ( unsigned j = 0 ; j < i ; ++j )
 					regfree( &vals_re[ j ] );
@@ -1214,7 +1248,6 @@ public:
 			regfree( &vals_re[ i ] );
 		delete[] vals_re;
 	}
-#endif
 };
 
 static const char *usage =
@@ -1230,11 +1263,9 @@ static const char *usage =
 "csv select <col1>,<col2>,..  create a new csv with columns reordered\n"
 "csv listcol                  list csv column names, one per line\n"
 "csv addcol <col1>=<val1>,..  prepend an column to the csv with fixed value\n"
-#ifndef NO_REGEXP
 "csv grepcol <col1>=<val1>,.. create a csv with only the lines where colX has value X (regexp)\n"
 "                             with multiple colval, show line if any one match (c1=~v1 OR c2=~v2)\n"
 "                             add option -i for nocase, -v to invert\n"
-#endif
 ;
 
 int main ( int argc, char * argv[] )
@@ -1271,7 +1302,6 @@ int main ( int argc, char * argv[] )
 			has_headerline = false;
 			break;
 
-#ifndef NO_REGEXP
 		case 'i':
 			re_flags |= 1 << RE_NOCASE;
 			break;
@@ -1279,7 +1309,6 @@ int main ( int argc, char * argv[] )
 		case 'v':
 			re_flags |= 1 << RE_INVERT;
 			break;
-#endif
 
 		default:
 			std::cerr << "Unknwon option: " << opt << std::endl << usage << std::endl;
@@ -1294,12 +1323,8 @@ int main ( int argc, char * argv[] )
 	}
 
 	output_buffer outbuf( outfile );
-
 	if ( outbuf.failed_to_open() )
-	{
-		std::cerr << "Cannot open " << (outfile ? outfile : "<stdout>") << ": " << strerror( errno ) << std::endl;
 		return EXIT_FAILURE;
-	}
 
 	csv_tool csv( &outbuf, sep, quot, has_headerline, re_flags );
 
@@ -1364,7 +1389,6 @@ int main ( int argc, char * argv[] )
 				csv.addcol( colval, argv[ i ] );
 		}
 	}
-#ifndef NO_REGEXP
 	else if ( mode == "grepcol" || mode == "grep" || mode == "g" )
 	{
 		if ( optind >= argc )
@@ -1382,7 +1406,6 @@ int main ( int argc, char * argv[] )
 				csv.grepcol( colval, argv[ i ] );
 		}
 	}
-#endif
 	else
 	{
 		std::cerr << "Unsupported mode " << mode << std::endl << usage << std::endl;

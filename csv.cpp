@@ -9,6 +9,8 @@
 #include <errno.h>
 #include <regex.h>
 
+#define CSV_TOOL_VERSION "20131111"
+
 // wraps an istream, provide an efficient interface to read lines
 class line_reader
 {
@@ -1253,11 +1255,15 @@ public:
 static const char *usage =
 "Usage: csv [options] <mode>\n"
 " Options:\n"
-"          -o <outfile>       default=stdout\n"
-"          -s <separator>     default=','\n"
-"          -q <quote>         default='\"'\n"
-"          -H                 csv has no header line\n"
-"                             columns are specified number (starts at 1)\n"
+"          -V                 display version information and exit\n"
+"          -h                 display help (this text) and exit\n"
+"          -o <outfile>       specify output file (default=stdout)\n"
+"          -s <separator>     csv field separator (default=',')\n"
+"          -q <quote>         csv quote character (default='\"')\n"
+"          -H                 csv files have no header line\n"
+"                             columns are specified as number (first col is 0)\n"
+"          -i                 case insensitive regex (grep mode)\n"
+"          -v                 invert regex: show non-matching lines (grep mode)\n"
 "\n"
 "csv extract <column>         extract one column data\n"
 "csv select <col1>,<col2>,..  create a new csv with columns reordered\n"
@@ -1265,7 +1271,12 @@ static const char *usage =
 "csv addcol <col1>=<val1>,..  prepend an column to the csv with fixed value\n"
 "csv grepcol <col1>=<val1>,.. create a csv with only the lines where colX has value X (regexp)\n"
 "                             with multiple colval, show line if any one match (c1=~v1 OR c2=~v2)\n"
-"                             add option -i for nocase, -v to invert\n"
+;
+
+static const char *version_info =
+"CSV tool version " CSV_TOOL_VERSION "\n"
+"Copyright (c) 2013 Yoann Guillot\n"
+"Licensed under the WtfPLv2, see http://www.wtfpl.net/\n"
 ;
 
 int main ( int argc, char * argv[] )
@@ -1278,12 +1289,16 @@ int main ( int argc, char * argv[] )
 	bool has_headerline = true;
 
 
-	while ( (opt = getopt(argc, argv, "ho:s:q:Hiv")) != -1 )
+	while ( (opt = getopt(argc, argv, "hVo:s:q:Hiv")) != -1 )
 	{
 		switch (opt)
 		{
 		case 'h':
-			std::cerr << usage;
+			std::cout << usage << std::endl;
+			return EXIT_SUCCESS;
+
+		case 'V':
+			std::cout << version_info << std::endl;
 			return EXIT_SUCCESS;
 
 		case 'o':

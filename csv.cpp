@@ -1404,7 +1404,7 @@ int main ( int argc, char * argv[] )
 
 	std::string mode = argv[optind++];
 
-	if ( mode == "extract" || mode == "x" )
+	if ( mode == "extract" || mode == "e" || mode == "x" )
 	{
 		if ( optind >= argc )
 		{
@@ -1419,7 +1419,7 @@ int main ( int argc, char * argv[] )
 			for ( int i = optind ; i < argc ; ++i )
 				csv.extract( colspec, argv[ i ] );
 	}
-	else if ( mode == "select" || mode == "s" )
+	else if ( mode == "select" || mode == "map" || mode == "s" || mode == "m" )
 	{
 		if ( optind >= argc )
 		{
@@ -1436,7 +1436,7 @@ int main ( int argc, char * argv[] )
 				csv.select( colspec, argv[ i ], (i == optind) );
 		}
 	}
-	else if ( mode == "listcol" )
+	else if ( mode == "listcol" || mode == "l" )
 	{
 		if ( optind >= argc )
 			csv.listcol( NULL );

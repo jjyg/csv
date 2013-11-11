@@ -1202,7 +1202,7 @@ public:
 
 		const unsigned stats_batch_size = 16*1024;
 		unsigned stats_seen = 0;
-		unsigned stats_match = 0;
+		unsigned stats_match = (headers ? 1 : 0);
 		bool invert = re_flags & ( 1 << RE_INVERT );
 		do
 		{

@@ -826,6 +826,41 @@ private:
 		return true;
 	}
 
+	// split a string "k1=v1,k2=v2,k3=v3" into vectors [k1, k2, k3] and [v1, v2, v3]
+	// with no headerline (-H), simply split on ',' into valspec
+	bool split_colvalspec( const std::string &colval, std::vector<std::string> *colspec, std::vector<std::string> *valspec )
+	{
+		size_t off = 0;
+
+		while (1)
+		{
+			if ( has_headerline )
+			{
+				size_t eq_off = colval.find( '=', off );
+				if ( eq_off == std::string::npos )
+				{
+					std::cerr << "Invalid colval: no '=' after " << colval.substr( off ) << std::endl;
+					return false;
+				}
+
+				colspec->push_back( colval.substr( off, eq_off - off ) );
+
+				off = eq_off + 1;
+			}
+
+			size_t next_off = colval.find( ',', off );
+			if ( next_off == std::string::npos )
+			{
+				valspec->push_back( colval.substr( off ) );
+				return true;
+			}
+
+			valspec->push_back( colval.substr( off, next_off - off ) );
+
+			off = next_off + 1;
+		}
+	}
+
 public:
 	explicit csv_tool ( output_buffer *outbuf, char sep = ',', char quot = '"', bool has_headerline = true ) :
 		sep(sep),
@@ -955,6 +990,89 @@ public:
 		delete[] fld_off;
 		delete[] fld_len;
 	}
+
+	// list columns of the file (indexes if -H)
+	void listcol ( const char *filename )
+	{
+		if ( ! start_reader( "", filename ) )
+			return;
+
+		if ( headers )
+		{
+			for ( unsigned i = 0 ; i < headers->size() ; ++i )
+			{
+				outbuf->append( (*headers)[ i ] );
+				outbuf->append_nl();
+			}
+		}
+		else
+		{
+			char buf[16];
+			for ( int i = 0 ; i <= max_index ; ++i )
+			{
+				unsigned sz = snprintf( buf, sizeof(buf), "%d", i );
+				if ( sz < sizeof(buf) )
+					outbuf->append( buf, sz );
+				outbuf->append_nl();
+			}
+		}
+	}
+
+	// prepend fields to every row (ignore added colnames if -H)
+	void addcol ( const std::string &colval, const char *filename )
+	{
+		std::vector<std::string> colspec;
+		std::vector<std::string> valspec;
+		if ( ! split_colvalspec( colval, &colspec, &valspec ) )
+			return;
+
+		if ( ! start_reader( "", filename ) )
+			return;
+
+		if ( headers )
+		{
+			for ( unsigned i = 0 ; i < colspec.size() ; ++i )
+			{
+				outbuf->append( reader->escape_csv_field( colspec[i] ) );
+				outbuf->append( sep );
+			}
+
+			for ( unsigned i = 0 ; i < headers->size() ; ++i )
+			{
+				outbuf->append( reader->escape_csv_field( (*headers)[i] ) );
+
+				if ( i + 1 < headers->size() )
+					outbuf->append( sep );
+			}
+
+			outbuf->append_nl();
+		}
+
+		if ( reader->eos() )
+			return;
+
+		do
+		{
+			for ( unsigned i = 0 ; i < valspec.size() ; ++i )
+			{
+				if ( i > 0 )
+					outbuf->append( sep );
+				outbuf->append( valspec[ i ] );
+			}
+
+			char *fld = NULL;
+			unsigned fld_len = 0;
+
+			while ( reader->read_csv_field( &fld, &fld_len, &fld_len ) )
+			{
+				outbuf->append( sep );
+				outbuf->append( fld, fld_len );
+			}
+
+			outbuf->append_nl();
+
+		} while ( reader->fetch_line() );
+	}
 };
 
 static const char *usage =
@@ -968,8 +1086,9 @@ static const char *usage =
 "\n"
 "csv extract <column>         extract one column data\n"
 "csv select <col1>,<col2>,..  create a new csv with columns reordered\n"
-"csv addcol <col1>=<val1>     append an column to the csv with fixed value\n"
-"csv grepcol <col1>=<val1>    create a csv with only the lines where colX has value X (regexp)\n"
+"csv listcol                  list csv column names, one per line\n"
+"csv addcol <col1>=<val1>,..  prepend an column to the csv with fixed value\n"
+"csv grepcol <col1>=<val1>,.. create a csv with only the lines where colX has value X (regexp)\n"
 ;
 
 int main ( int argc, char * argv[] )
@@ -1059,6 +1178,33 @@ int main ( int argc, char * argv[] )
 		{
 			for ( int i = optind ; i < argc ; ++i )
 				csv.select( colspec, argv[ i ], (i == optind) );
+		}
+	}
+	else if ( mode == "listcol" )
+	{
+		if ( optind >= argc )
+			csv.listcol( NULL );
+		else
+		{
+			for ( int i = optind ; i < argc ; ++i )
+				csv.listcol( argv[ i ] );
+		}
+	}
+	else if ( mode == "addcol" )
+	{
+		if ( optind >= argc )
+		{
+			std::cerr << "No colval specified" << std::endl << usage << std::endl;
+			return EXIT_FAILURE;
+		}
+		std::string colval = argv[ optind++ ];
+
+		if ( optind >= argc )
+			csv.addcol( colval, NULL );
+		else
+		{
+			for ( int i = optind ; i < argc ; ++i )
+				csv.addcol( colval, argv[ i ] );
 		}
 	}
 	else

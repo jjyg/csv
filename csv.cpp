@@ -1305,7 +1305,7 @@ int main ( int argc, char * argv[] )
 
 	std::string mode = argv[optind++];
 
-	if ( mode == "extract" )
+	if ( mode == "extract" || mode == "x" )
 	{
 		if ( optind >= argc )
 		{
@@ -1320,7 +1320,7 @@ int main ( int argc, char * argv[] )
 			for ( int i = optind ; i < argc ; ++i )
 				csv.extract( colspec, argv[ i ] );
 	}
-	else if ( mode == "select" )
+	else if ( mode == "select" || mode == "s" )
 	{
 		if ( optind >= argc )
 		{
@@ -1347,7 +1347,7 @@ int main ( int argc, char * argv[] )
 				csv.listcol( argv[ i ] );
 		}
 	}
-	else if ( mode == "addcol" )
+	else if ( mode == "addcol" || mode == "a" )
 	{
 		if ( optind >= argc )
 		{
@@ -1365,7 +1365,7 @@ int main ( int argc, char * argv[] )
 		}
 	}
 #ifndef NO_REGEXP
-	else if ( mode == "grepcol" )
+	else if ( mode == "grepcol" || mode == "grep" || mode == "g" )
 	{
 		if ( optind >= argc )
 		{

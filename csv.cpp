@@ -768,6 +768,7 @@ private:
 		// parse colspec_str: split on comas
 		std::vector<std::string> colspec_vec;
 
+		if ( colspec_str.size() > 0 )
 		{
 			size_t off = 0, idx = -1;
 			while ( (idx = colspec_str.find( ',', off )) != std::string::npos )
@@ -796,6 +797,7 @@ private:
 					dash_off = spec_it->find( '-', dash_off + 1 );
 					if ( dash_off == std::string::npos )
 					{
+						std::cerr << "Column not found: " << *spec_it << std::endl;
 						indexes->push_back( -1 );
 						break;
 					}
@@ -1219,7 +1221,8 @@ public:
 
 					for ( unsigned i = 0 ; i < (*inv_indexes)[ idx_in ]->size() ; ++i )
 					{
-						if ( regexec( &vals_re[ (*(*inv_indexes)[ idx_in ])[ i ] ], str.c_str(), 0, NULL, 0 ) != REG_NOMATCH )
+						unsigned idx_g = (*(*inv_indexes)[ idx_in ])[ i ];
+						if ( idx_g < vals.size() && regexec( &vals_re[ idx_g ], str.c_str(), 0, NULL, 0 ) != REG_NOMATCH )
 							show = true;
 					}
 				}
@@ -1250,6 +1253,61 @@ public:
 			regfree( &vals_re[ i ] );
 		delete[] vals_re;
 	}
+
+	// dump csv rows, prefix each field with its colname
+	void inspect ( const char *filename )
+	{
+		if ( ! start_reader( "", filename ) )
+			return;
+
+		if ( reader->eos() )
+			return;
+
+		unsigned long lineno = 0;
+		char linebuf[16];
+		do
+		{
+			{
+				unsigned linebuf_sz = snprintf( linebuf, sizeof(linebuf), "%03lu:", lineno++ );
+				if ( linebuf_sz > sizeof(linebuf) )
+					linebuf_sz = sizeof(linebuf);
+				std::string linestr(linebuf, linebuf_sz);
+				outbuf->append( linestr );
+			}
+
+			// parse input row
+			char *fld = NULL;
+			unsigned f_len = 0;
+			unsigned colnum = 0;
+			while ( reader->read_csv_field( &fld, &f_len ) )
+			{
+				// create & populate headers ondemand
+				if ( ! headers )
+					headers = new std::vector<std::string>;
+
+				if ( colnum >= headers->size() )
+				{
+					char fldbuf[16];
+					unsigned fldbuf_sz = snprintf( fldbuf, sizeof(fldbuf), "%u", colnum );
+					if ( fldbuf_sz > sizeof(fldbuf) )
+						fldbuf_sz = sizeof(fldbuf);
+					std::string fldstr(fldbuf, fldbuf_sz);
+					headers->push_back( fldstr );
+				}
+
+				if ( colnum > 0 )
+					outbuf->append( sep );
+
+				outbuf->append( headers->at( colnum ) );
+				outbuf->append( '=' );
+				outbuf->append( fld, f_len );
+				++colnum;
+			}
+			outbuf->append_nl();
+
+		} while ( reader->fetch_line() );
+	}
+
 };
 
 static const char *usage =
@@ -1265,12 +1323,13 @@ static const char *usage =
 "          -i                 case insensitive regex (grep mode)\n"
 "          -v                 invert regex: show non-matching lines (grep mode)\n"
 "\n"
-"csv extract <column>         extract one column data\n"
-"csv select <col1>,<col2>,..  create a new csv with columns reordered\n"
-"csv listcol                  list csv column names, one per line\n"
 "csv addcol <col1>=<val1>,..  prepend an column to the csv with fixed value\n"
+"csv extract <column>         extract one column data\n"
 "csv grepcol <col1>=<val1>,.. create a csv with only the lines where colX has value X (regexp)\n"
 "                             with multiple colval, show line if any one match (c1=~v1 OR c2=~v2)\n"
+"csv select <col1>,<col2>,..  create a new csv with a subset/reordered columns\n"
+"csv listcol                  list csv column names, one per line\n"
+"csv inspect                  dump csv file, prefix each field with its column name\n"
 ;
 
 static const char *version_info =
@@ -1419,6 +1478,16 @@ int main ( int argc, char * argv[] )
 		{
 			for ( int i = optind ; i < argc ; ++i )
 				csv.grepcol( colval, argv[ i ] );
+		}
+	}
+	else if ( mode == "inspect" || mode == "i" )
+	{
+		if ( optind >= argc )
+			csv.inspect( NULL );
+		else
+		{
+			for ( int i = optind ; i < argc ; ++i )
+				csv.inspect( argv[ i ] );
 		}
 	}
 	else

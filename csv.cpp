@@ -313,35 +313,6 @@ private:
 			cur_line_length--;
 	}
 
-	// return the index of the string str in the string vector headers (case insensitive)
-	// checks for numeric indexes if not found (decimal, [0-9]+), <= max_index
-	// return -1 if not found
-	int parse_index_uint( const std::string &str, const std::vector<std::string> *headers, const int max_index ) const
-	{
-		if ( str.size() == 0 )
-			return -1;
-
-		if ( headers )
-			for ( std::vector<std::string>::const_iterator head_it = headers->begin() ; head_it != headers->end() ; ++head_it )
-				if ( ! strcasecmp( str.c_str(), head_it->c_str() ) )
-					return head_it - headers->begin();
-
-		int ret = 0;
-
-		for ( unsigned i = 0 ; i < str.size() ; ++i )
-		{
-			if ( str[i] < '0' || str[i] > '9' )
-				return -1;
-
-			ret = ret * 10 + (str[i] - '0');
-		}
-
-		if ( ret > max_index )
-			return -1;
-
-		return ret;
-	}
-
 public:
 	bool failed_to_open ( ) const
 	{
@@ -358,6 +329,12 @@ public:
 			return false;
 
 		return true;
+	}
+
+	// reset cur_field_offset to 0, so that subsequent read_csv_field() re-output the current row fields
+	void reset_cur_field_offset ( )
+	{
+		cur_field_offset = 0;
 	}
 
 	// line_max is passed to the line_reader, it is also the limit for a full csv row (that may span many lines)
@@ -590,6 +567,9 @@ public:
 	{
 		std::string ret;
 
+		if ( str.size() == 0 )
+			return ret;
+
 		ret.push_back( quot );
 
 		size_t last = 0, next = str.find( quot );
@@ -611,7 +591,7 @@ public:
 
 	// parse the current csv line (after a call to fetch_line())
 	// return a pointer to a vector of unescaped strings, should be delete by caller
-	std::vector<std::string>* parse_line( )
+	std::vector<std::string>* parse_line ( )
 	{
 		std::vector<std::string> *vec = new std::vector<std::string>;
 		char *field_start = NULL;
@@ -627,37 +607,120 @@ public:
 		return vec;
 	}
 
-	// parse a colspec string (coma-separated list of column names), return a vector of indexes for those columns
-	// colspec is a coma-separated list of column names, or a coma-separated list of column indexes (numeric, 0-based)
-	// colspec may include ranges of columns, with "begin-end". Omit "begin" to start at 0, omit "end" to finish at last column
-	//
-	// if a column is not found, its index is set as -1. For ranges, if begin or end is not found, add a single -1 index.
-	// if the csv has a header row, should be called with headers = parse_line()
-	// without a header list, the current line is parsed and reset to count the fields per row
-	std::vector<int> parse_colspec( const std::string &colspec_str, const std::vector<std::string> *headers )
-	{
-		std::vector<int> indexes;
-		int max_index = -1;
+private:
+	csv_reader ( const csv_reader& );
+	csv_reader& operator=( const csv_reader& );
+};
 
-		// find max_index
+class csv_tool
+{
+private:
+	char sep;
+	char quot;
+	bool has_headerline;
+
+	output_buffer *outbuf;
+
+	csv_reader *reader;
+	std::vector<std::string> *headers;
+	std::vector<int> *indexes;
+	std::vector< std::vector<unsigned>* > *inv_indexes;
+	int max_index;
+
+	void cleanup ( )
+	{
+		if ( reader )
+		{
+			delete reader;
+			reader = NULL;
+		}
+
+		if ( headers )
+		{
+			delete headers;
+			headers = NULL;
+		}
+
+		if ( indexes )
+		{
+			delete indexes;
+			indexes = NULL;
+		}
+
+		if ( inv_indexes )
+		{
+			for ( unsigned i = 0 ; i < inv_indexes->size() ; ++i )
+				if ( (*inv_indexes)[ i ] )
+					delete (*inv_indexes)[ i ];
+
+			delete inv_indexes;
+			inv_indexes = NULL;
+		}
+	}
+
+	void count_max_index ( )
+	{
 		if ( headers )
 		{
 			max_index = headers->size() - 1;
+			return;
 		}
-		else
-		{
-			// count columns on the 1st row
-			char *ptr = NULL;
-			unsigned len = 0;
-			while ( read_csv_field( &ptr, &len ) )
-				++max_index;
 
-			// reset internal ptr for subsequent read_csv_fields
-			cur_field_offset = 0;
+		// count columns on the current row
+		char *ptr = NULL;
+		unsigned len = 0;
+
+		max_index = -1;
+		while ( reader->read_csv_field( &ptr, &len ) )
+			++max_index;
+
+		// reset internal ptr for subsequent read_csv_fields
+		reader->reset_cur_field_offset();
+	}
+
+	// return the index of the string str in the string vector headers (case insensitive)
+	// checks for numeric indexes if not found (decimal, [0-9]+), <= max_index
+	// return -1 if not found
+	int parse_index_uint( const std::string &str ) const
+	{
+		if ( str.size() == 0 )
+			return -1;
+
+		if ( headers )
+			for ( std::vector<std::string>::const_iterator head_it = headers->begin() ; head_it != headers->end() ; ++head_it )
+				if ( ! strcasecmp( str.c_str(), head_it->c_str() ) )
+					return head_it - headers->begin();
+
+		int ret = 0;
+
+		for ( unsigned i = 0 ; i < str.size() ; ++i )
+		{
+			if ( str[i] < '0' || str[i] > '9' )
+				return -1;
+
+			ret = ret * 10 + (str[i] - '0');
 		}
+
+		if ( ret > max_index )
+			return -1;
+
+		return ret;
+	}
+
+	// Parse a colspec string (coma-separated list of column names), populate 'indexes'
+	//
+	// colspec is a coma-separated list of column names, or a coma-separated list of column indexes (numeric, 0-based)
+	// colspec may include ranges of columns, with "begin-end". Omit "begin" to start at 0, omit "end" to finish at last column.
+	//
+	// if a column is not found, its index is set as -1. For ranges, if begin or end is not found, add a single -1 index.
+	// without a header list, the current line is parsed and reset to count the fields per row
+	void parse_colspec( const std::string &colspec_str )
+	{
+		indexes = new std::vector<int>;
 
 		// parse colspec_str: split on comas
 		std::vector<std::string> colspec_vec;
+
 		{
 			size_t off = 0, idx = -1;
 			while ( (idx = colspec_str.find( ',', off )) != std::string::npos )
@@ -671,10 +734,10 @@ public:
 		// generate indexes, handle ranges in colspec_vec
 		for ( std::vector<std::string>::const_iterator spec_it = colspec_vec.begin() ; spec_it != colspec_vec.end() ; ++spec_it )
 		{
-			int idx = parse_index_uint( *spec_it, headers, max_index );
+			int idx = parse_index_uint( *spec_it );
 
 			if ( idx != -1 )
-				indexes.push_back( idx );
+				indexes->push_back( idx );
 			else
 			{
 				// check for ranges
@@ -686,7 +749,7 @@ public:
 					dash_off = spec_it->find( '-', dash_off + 1 );
 					if ( dash_off == std::string::npos )
 					{
-						indexes.push_back( -1 );
+						indexes->push_back( -1 );
 						break;
 					}
 
@@ -694,218 +757,205 @@ public:
 					if ( dash_off == 0 )
 						min = 0;
 					else
-						min = parse_index_uint( spec_it->substr( 0, dash_off ), headers, max_index );
+						min = parse_index_uint( spec_it->substr( 0, dash_off ) );
 
 					if ( dash_off == spec_it->size() - 1 )
 						max = max_index;
 					else
-						max = parse_index_uint( spec_it->substr( dash_off + 1 ), headers, max_index );
+						max = parse_index_uint( spec_it->substr( dash_off + 1 ) );
 
 					if ( min != -1 && max != -1 )
 					{
 						for ( int i = min ; i <= max ; ++i )
-							indexes.push_back( i );
+							indexes->push_back( i );
 
 						break;
 					}
 				}
 			}
 		}
-//for ( std::vector<std::string>::const_iterator head_it = headers->begin() ; head_it != headers->end() ; ++head_it ) { std::cout << "hdr " << *head_it << std::endl; }
-//for ( std::vector<int>::const_iterator ind_it = indexes.begin() ; ind_it != indexes.end() ; ++ind_it ) { std::cout << "idx " << *ind_it << std::endl; }
 
-		return indexes;
-	}
-
-private:
-	csv_reader ( const csv_reader& );
-	csv_reader& operator=( const csv_reader& );
-};
-
-static output_buffer *outbuf = NULL;
-static char sep = ',';
-static char quot = '"';
-static bool has_headerline = true;
-
-static void csv_extract( const std::string &colspec, const char *filename )
-{
-	std::vector<std::string> *headers = NULL;
-	csv_reader reader( filename, sep, quot );
-
-	if ( reader.failed_to_open() )
-	{
-		std::cerr << "Cannot open " << (filename ? filename : "<stdin>") << ": " << strerror( errno ) << std::endl;
-		return;
-	}
-
-	if ( has_headerline )
-	{
-		if ( ! reader.fetch_line() )
+		// inv[ input col idx ] = [ out col idx, out col idx ]
+		inv_indexes = new std::vector< std::vector<unsigned>* >( max_index + 1 );
+		for ( unsigned idx_out = 0 ; idx_out < indexes->size() ; ++idx_out )
 		{
-			std::cerr << "Empty file" << std::endl;
-			return;
-		}
-
-		headers = reader.parse_line();
-	}
-
-	if ( ! reader.fetch_line() )
-	{
-		if ( headers )
-			delete headers;
-		return;
-	}
-
-	std::vector<int> indexes = reader.parse_colspec( colspec, headers );
-
-	if ( headers )
-		delete headers;
-
-	if ( indexes.size() != 1 || indexes[0] < 0 )
-	{
-		std::cerr << "Invalid colspec" << std::endl;
-		return;
-	}
-
-	int target_col = indexes[0];
-
-	do
-	{
-		char *ptr = NULL;
-		unsigned len = 0;
-		int idx_in = 0;
-
-		while ( reader.read_csv_field( &ptr, &len ) )
-		{
-			if ( idx_in++ == target_col )
-			{
-				std::string *str = reader.unescape_csv_field( &ptr, &len );
-				if ( str )
-					outbuf->append( str );
-				else
-					outbuf->append( ptr, len );
-				outbuf->append_nl();
-			}
-			// cannot break: a later field may include a newline
-		}
-	} while ( reader.fetch_line() );
-}
-
-static void csv_select ( const std::string &colspec, const char *filename, bool show_headers )
-{
-	std::vector<std::string> *headers = NULL;
-	csv_reader reader( filename, sep, quot );
-
-	if ( reader.failed_to_open() )
-	{
-		std::cerr << "Cannot open " << (filename ? filename : "<stdin>") << ": " << strerror( errno ) << std::endl;
-		return;
-	}
-
-	if ( has_headerline )
-	{
-		if ( ! reader.fetch_line() )
-		{
-			std::cerr << "Empty file" << std::endl;
-			return;
-		}
-
-		headers = reader.parse_line();
-	}
-
-	reader.fetch_line();
-
-	std::vector<int> indexes = reader.parse_colspec( colspec, headers );
-
-	if ( show_headers && headers )
-	{
-		for ( unsigned i = 0 ; i < indexes.size() ; ++i )
-		{
-			int idx_in = indexes[ i ];
+			int idx_in = (*indexes)[ idx_out ];
 
 			if ( idx_in == -1 )
 				continue;
 
-			outbuf->append( reader.escape_csv_field( headers->at( idx_in ) ) );
-			if ( i < indexes.size() - 1 )
-				outbuf->append( sep );
+			if ( ! (*inv_indexes)[ idx_in ] )
+				(*inv_indexes)[ idx_in ] = new std::vector<unsigned>;
+
+			(*inv_indexes)[ idx_in ]->push_back( idx_out );
 		}
-		outbuf->append_nl();
 	}
 
-	if ( headers )
-		delete headers;
-
-	if ( reader.eos() )
-		return;
-
-	unsigned idx_len = indexes.size();
-	unsigned *fld_off = new unsigned[ idx_len ];
-	unsigned *fld_len = new unsigned[ idx_len ];
-
-	// inv[ input col idx ] = [ out col idx, out col idx ]
-	std::vector< std::vector<unsigned>* > inv_indexes;
-	for ( unsigned idx_out = 0 ; idx_out < idx_len ; ++idx_out )
+	// create a csv reader, populate indexes from colspec
+	// returns true if everything is fine
+	bool start_reader ( const std::string &colspec, const char *filename )
 	{
-		int idx_in = indexes[ idx_out ];
+		cleanup();
 
-		if ( idx_in == -1 )
-			continue;
+		reader = new csv_reader( filename, sep, quot );
 
-		if ( inv_indexes.size() <= (unsigned)idx_in )
-			inv_indexes.resize( idx_in + 1 );
-
-		if ( ! inv_indexes[ idx_in ] )
-			inv_indexes[ idx_in ] = new std::vector<unsigned>;
-
-		inv_indexes[ idx_in ]->push_back( idx_out );
-	}
-
-	do
-	{
-		char *line = NULL;
-
-		for ( unsigned idx_out = 0 ; idx_out < idx_len ; ++idx_out )
-			fld_off[ idx_out ] = (unsigned)-1;
-
-		// parse input row
-		unsigned f_off = 0, f_len = 0;
-		unsigned idx_in = 0;
-		while ( reader.read_csv_field( &line, &f_off, &f_len ) )
+		if ( reader->failed_to_open() )
 		{
-			if ( inv_indexes.size() > idx_in && inv_indexes[ idx_in ] )
+			std::cerr << "Cannot open " << (filename ? filename : "<stdin>") << ": " << strerror( errno ) << std::endl;
+			cleanup();
+			return false;
+		}
+
+		if ( has_headerline )
+		{
+			if ( ! reader->fetch_line() )
 			{
-				// current input field appears in output, save its off+len
-				for ( unsigned i = 0 ; i < inv_indexes[ idx_in ]->size() ; ++i )
-				{
-					unsigned idx_out = (*inv_indexes[ idx_in ])[ i ];
-					fld_off[ idx_out ] = f_off;
-					fld_len[ idx_out ] = f_len;
-				}
+				std::cerr << "Empty file" << std::endl;
+				cleanup();
+				return false;
 			}
-			++idx_in;
+
+			headers = reader->parse_line();
 		}
 
-		// generate output row
-		for ( unsigned idx_out = 0 ; idx_out < idx_len ; ++idx_out )
+		reader->fetch_line();
+		count_max_index();
+
+		parse_colspec( colspec );
+
+		return true;
+	}
+
+public:
+	explicit csv_tool ( output_buffer *outbuf, char sep = ',', char quot = '"', bool has_headerline = true ) :
+		sep(sep),
+		quot(quot),
+		has_headerline(has_headerline),
+		outbuf(outbuf),
+		reader(NULL),
+		headers(NULL),
+		indexes(NULL),
+		inv_indexes(NULL)
+	{
+	}
+
+	~csv_tool ( )
+	{
+		cleanup();
+	}
+
+
+	// read one column name (specified in colspec), and dump to outbuf every unescaped row field content for this column
+	void extract ( const std::string &colspec, const char *filename )
+	{
+		if ( ! start_reader( colspec, filename ) )
+			return;
+
+		if ( indexes->size() != 1 || (*indexes)[0] < 0 )
 		{
-			if ( fld_off[ idx_out ] != (unsigned)-1 )
-				outbuf->append( line + fld_off[ idx_out ], fld_len[ idx_out ] );
-			if ( idx_out < idx_len - 1 )
-				outbuf->append( sep );
+			std::cerr << "Invalid colspec" << std::endl;
+			return;
 		}
-		outbuf->append_nl();
 
-	} while ( reader.fetch_line() );
+		if ( reader->eos() )
+			return;
 
-	// ~inv_indexes
-	for ( unsigned idx_out = 0 ; idx_out < idx_len ; ++idx_out )
-		if ( inv_indexes[ idx_out ] )
-			delete inv_indexes[ idx_out ];
+		do
+		{
+			char *ptr = NULL;
+			unsigned len = 0;
+			unsigned idx_in = 0;
 
-	delete[] fld_off;
-	delete[] fld_len;
-}
+			while ( reader->read_csv_field( &ptr, &len ) )
+			{
+				if ( ( idx_in < inv_indexes->size() ) && ( (*inv_indexes)[ idx_in ] ) )
+				{
+					std::string *str = reader->unescape_csv_field( &ptr, &len );
+					if ( str )
+						outbuf->append( str );
+					else
+						outbuf->append( ptr, len );
+				}
+
+				// cannot break: a later field may include a newline
+				++idx_in;
+			}
+			outbuf->append_nl();
+
+		} while ( reader->fetch_line() );
+	}
+
+
+	// output a csv containing the columns from colspec of the input csv
+	void select ( const std::string &colspec, const char *filename, bool show_headers )
+	{
+		if ( ! start_reader( colspec, filename ) )
+			return;
+
+		if ( show_headers && headers )
+		{
+			for ( unsigned i = 0 ; i < indexes->size() ; ++i )
+			{
+				int idx_in = (*indexes)[ i ];
+
+				if ( idx_in != -1 )
+					outbuf->append( reader->escape_csv_field( (*headers)[ idx_in ] ) );
+
+				if ( i + 1 < indexes->size() )
+					outbuf->append( sep );
+			}
+			outbuf->append_nl();
+		}
+
+		if ( reader->eos() )
+			return;
+
+		unsigned idx_len = indexes->size();
+		unsigned *fld_off = new unsigned[ idx_len ];
+		unsigned *fld_len = new unsigned[ idx_len ];
+
+		do
+		{
+			for ( unsigned idx_out = 0 ; idx_out < idx_len ; ++idx_out )
+				fld_off[ idx_out ] = (unsigned)-1;
+
+			// parse input row
+			char *line = NULL;
+			unsigned f_off = 0, f_len = 0;
+			unsigned idx_in = 0;
+			while ( reader->read_csv_field( &line, &f_off, &f_len ) )
+			{
+				if ( idx_in < inv_indexes->size() && (*inv_indexes)[ idx_in ] )
+				{
+					// current input field appears in output, save its off+len
+					for ( unsigned i = 0 ; i < (*inv_indexes)[ idx_in ]->size() ; ++i )
+					{
+						unsigned idx_out = (*(*inv_indexes)[ idx_in ])[ i ];
+						fld_off[ idx_out ] = f_off;
+						fld_len[ idx_out ] = f_len;
+					}
+				}
+				++idx_in;
+			}
+
+			// generate output row
+			for ( unsigned idx_out = 0 ; idx_out < idx_len ; ++idx_out )
+			{
+				if ( fld_off[ idx_out ] != (unsigned)-1 )
+					outbuf->append( line + fld_off[ idx_out ], fld_len[ idx_out ] );
+
+				if ( idx_out < idx_len - 1 )
+					outbuf->append( sep );
+			}
+			outbuf->append_nl();
+
+		} while ( reader->fetch_line() );
+
+
+		delete[] fld_off;
+		delete[] fld_len;
+	}
+};
 
 static const char *usage =
 "Usage: csv [options] <mode>\n"
@@ -926,6 +976,10 @@ int main ( int argc, char * argv[] )
 {
 	int opt;
 	char *outfile = NULL;
+	char sep = ',';
+	char quot = '"';
+	bool has_headerline = true;
+
 
 	while ( (opt = getopt(argc, argv, "ho:s:q:H")) != -1 )
 	{
@@ -963,15 +1017,15 @@ int main ( int argc, char * argv[] )
 		return EXIT_FAILURE;
 	}
 
-	output_buffer local_outbuf( outfile );
+	output_buffer outbuf( outfile );
 
-	if ( local_outbuf.failed_to_open() )
+	if ( outbuf.failed_to_open() )
 	{
 		std::cerr << "Cannot open " << (outfile ? outfile : "<stdout>") << ": " << strerror( errno ) << std::endl;
 		return EXIT_FAILURE;
 	}
 
-	outbuf = &local_outbuf;
+	csv_tool csv( &outbuf, sep, quot, has_headerline );
 
 	std::string mode = argv[optind++];
 
@@ -985,13 +1039,12 @@ int main ( int argc, char * argv[] )
 		std::string colspec = argv[ optind++ ];
 
 		if ( optind >= argc )
-			csv_extract( colspec, NULL );
+			csv.extract( colspec, NULL );
 		else
 			for ( int i = optind ; i < argc ; ++i )
-				csv_extract( colspec, argv[ i ] );
+				csv.extract( colspec, argv[ i ] );
 	}
-	else
-	if ( mode == "select" )
+	else if ( mode == "select" )
 	{
 		if ( optind >= argc )
 		{
@@ -1001,15 +1054,11 @@ int main ( int argc, char * argv[] )
 		std::string colspec = argv[ optind++ ];
 
 		if ( optind >= argc )
-			csv_select( colspec, NULL, true );
+			csv.select( colspec, NULL, true );
 		else
 		{
-			bool show_header = true;
 			for ( int i = optind ; i < argc ; ++i )
-			{
-				csv_select( colspec, argv[ i ], show_header );
-				show_header = false;
-			}
+				csv.select( colspec, argv[ i ], (i == optind) );
 		}
 	}
 	else

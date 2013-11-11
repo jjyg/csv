@@ -7,6 +7,9 @@
 #include <fstream>
 #include <vector>
 #include <errno.h>
+#ifndef NO_REGEXP
+#include <regex.h>
+#endif
 
 // wraps an istream, provide an efficient interface to read lines
 class line_reader
@@ -612,12 +615,18 @@ private:
 	csv_reader& operator=( const csv_reader& );
 };
 
+enum {
+	RE_NOCASE,
+	RE_INVERT
+};
+
 class csv_tool
 {
 private:
 	char sep;
 	char quot;
 	bool has_headerline;
+	unsigned re_flags;
 
 	output_buffer *outbuf;
 
@@ -827,23 +836,27 @@ private:
 	}
 
 	// split a string "k1=v1,k2=v2,k3=v3" into vectors [k1, k2, k3] and [v1, v2, v3]
-	// with no headerline (-H), simply split on ',' into valspec
-	bool split_colvalspec( const std::string &colval, std::vector<std::string> *colspec, std::vector<std::string> *valspec )
+	// k may be omitted with -H
+	bool split_colvalspec( const std::string &colval, std::vector<std::string> *cols, std::vector<std::string> *vals )
 	{
 		size_t off = 0;
 
 		while (1)
 		{
-			if ( has_headerline )
+			size_t eq_off = colval.find( '=', off );
+			if ( eq_off == std::string::npos )
 			{
-				size_t eq_off = colval.find( '=', off );
-				if ( eq_off == std::string::npos )
+				if ( has_headerline )
 				{
 					std::cerr << "Invalid colval: no '=' after " << colval.substr( off ) << std::endl;
 					return false;
 				}
 
-				colspec->push_back( colval.substr( off, eq_off - off ) );
+				cols->push_back( colval.substr( 0, 0 ) );
+			}
+			else
+			{
+				cols->push_back( colval.substr( off, eq_off - off ) );
 
 				off = eq_off + 1;
 			}
@@ -851,21 +864,22 @@ private:
 			size_t next_off = colval.find( ',', off );
 			if ( next_off == std::string::npos )
 			{
-				valspec->push_back( colval.substr( off ) );
+				vals->push_back( colval.substr( off ) );
 				return true;
 			}
 
-			valspec->push_back( colval.substr( off, next_off - off ) );
+			vals->push_back( colval.substr( off, next_off - off ) );
 
 			off = next_off + 1;
 		}
 	}
 
 public:
-	explicit csv_tool ( output_buffer *outbuf, char sep = ',', char quot = '"', bool has_headerline = true ) :
+	explicit csv_tool ( output_buffer *outbuf, char sep = ',', char quot = '"', bool has_headerline = true, unsigned re_flags = 0 ) :
 		sep(sep),
 		quot(quot),
 		has_headerline(has_headerline),
+		re_flags(re_flags),
 		outbuf(outbuf),
 		reader(NULL),
 		headers(NULL),
@@ -931,13 +945,13 @@ public:
 		{
 			for ( unsigned i = 0 ; i < indexes->size() ; ++i )
 			{
+				if ( i > 0 )
+					outbuf->append( sep );
+
 				int idx_in = (*indexes)[ i ];
 
 				if ( idx_in != -1 )
 					outbuf->append( reader->escape_csv_field( (*headers)[ idx_in ] ) );
-
-				if ( i + 1 < indexes->size() )
-					outbuf->append( sep );
 			}
 			outbuf->append_nl();
 		}
@@ -976,11 +990,11 @@ public:
 			// generate output row
 			for ( unsigned idx_out = 0 ; idx_out < idx_len ; ++idx_out )
 			{
+				if ( idx_out > 0 )
+					outbuf->append( sep );
+
 				if ( fld_off[ idx_out ] != (unsigned)-1 )
 					outbuf->append( line + fld_off[ idx_out ], fld_len[ idx_out ] );
-
-				if ( idx_out < idx_len - 1 )
-					outbuf->append( sep );
 			}
 			outbuf->append_nl();
 
@@ -1021,9 +1035,9 @@ public:
 	// prepend fields to every row (ignore added colnames if -H)
 	void addcol ( const std::string &colval, const char *filename )
 	{
-		std::vector<std::string> colspec;
-		std::vector<std::string> valspec;
-		if ( ! split_colvalspec( colval, &colspec, &valspec ) )
+		std::vector<std::string> cols;
+		std::vector<std::string> vals;
+		if ( ! split_colvalspec( colval, &cols, &vals ) )
 			return;
 
 		if ( ! start_reader( "", filename ) )
@@ -1031,9 +1045,9 @@ public:
 
 		if ( headers )
 		{
-			for ( unsigned i = 0 ; i < colspec.size() ; ++i )
+			for ( unsigned i = 0 ; i < cols.size() ; ++i )
 			{
-				outbuf->append( reader->escape_csv_field( colspec[i] ) );
+				outbuf->append( reader->escape_csv_field( cols[i] ) );
 				outbuf->append( sep );
 			}
 
@@ -1053,11 +1067,11 @@ public:
 
 		do
 		{
-			for ( unsigned i = 0 ; i < valspec.size() ; ++i )
+			for ( unsigned i = 0 ; i < vals.size() ; ++i )
 			{
 				if ( i > 0 )
 					outbuf->append( sep );
-				outbuf->append( valspec[ i ] );
+				outbuf->append( vals[ i ] );
 			}
 
 			char *fld = NULL;
@@ -1073,6 +1087,134 @@ public:
 
 		} while ( reader->fetch_line() );
 	}
+
+#ifndef NO_REGEXP
+	// filter csv, display only lines whose field value match a regexp
+	void grepcol ( const std::string &colval, const char *filename )
+	{
+		std::vector<std::string> cols;
+		std::vector<std::string> vals;
+		if ( ! split_colvalspec( colval, &cols, &vals ) )
+			return;
+
+		// merge cols in a colspec
+		std::string colspec;
+		for ( unsigned i = 0 ; i < cols.size() ; ++i )
+		{
+			if ( i > 0 )
+				colspec.push_back( ',' );
+
+			colspec.append( cols[ i ] );
+		}
+
+		regex_t *vals_re = new regex_t[ vals.size() ];
+
+		int flags = REG_NOSUB | REG_EXTENDED;
+		if ( re_flags & ( 1 << RE_NOCASE ) )
+			flags |= REG_ICASE;
+
+		for ( unsigned i = 0 ; i < vals.size() ; ++i )
+		{
+
+			int err = regcomp( &vals_re[ i ], vals[ i ].c_str(), flags );
+			if ( err )
+			{
+				char errbuf[1024];
+				regerror( err, &vals_re[ i ], errbuf, sizeof(errbuf) );
+				std::cerr << "Invalid regexp: " << errbuf << std::endl;
+
+				for ( unsigned j = 0 ; j < i ; ++j )
+					regfree( &vals_re[ j ] );
+				delete[] vals_re;
+
+				return;
+			}
+		}
+
+		if ( ! start_reader( colspec, filename ) )
+		{
+			for ( unsigned i = 0 ; i < vals.size() ; ++i )
+				regfree( &vals_re[ i ] );
+			delete[] vals_re;
+
+			return;
+		}
+
+		if ( headers )
+		{
+			for ( unsigned i = 0 ; i < headers->size() ; ++i )
+			{
+				if ( i > 0 )
+					outbuf->append( sep );
+
+				outbuf->append( reader->escape_csv_field( (*headers)[i] ) );
+			}
+
+			outbuf->append_nl();
+		}
+
+		if ( reader->eos() )
+		{
+			for ( unsigned i = 0 ; i < vals.size() ; ++i )
+				regfree( &vals_re[ i ] );
+			delete[] vals_re;
+
+			return;
+		}
+
+		const unsigned stats_batch_size = 16*1024;
+		unsigned stats_seen = 0;
+		unsigned stats_match = 0;
+		bool invert = re_flags & ( 1 << RE_INVERT );
+		do
+		{
+			char *line = NULL;
+			unsigned f_off = 0, f_len = 0;
+			unsigned idx_in = 0;
+			bool show = false;
+
+			while ( reader->read_csv_field( &line, &f_off, &f_len ) )
+			{
+				if ( ( idx_in < inv_indexes->size() ) && ( (*inv_indexes)[ idx_in ] ) )
+				{
+					std::string str;
+					char *ptr = line + f_off;
+					reader->unescape_csv_field( &ptr, &f_len, &str );
+
+					for ( unsigned i = 0 ; i < (*inv_indexes)[ idx_in ]->size() ; ++i )
+					{
+						if ( regexec( &vals_re[ (*(*inv_indexes)[ idx_in ])[ i ] ], str.c_str(), 0, NULL, 0 ) != REG_NOMATCH )
+							show = true;
+					}
+				}
+				++idx_in;
+			}
+
+			if ( show ^ invert )
+			{
+				outbuf->append( line, f_off + f_len );
+				outbuf->append_nl();
+				++stats_match;
+			}
+			++stats_seen;
+
+			// manually flush if output is sparse
+			if ( stats_seen > stats_batch_size )
+			{
+				if ( ( stats_match > 0 ) && ( stats_match < stats_batch_size / 8 ) )
+					outbuf->flush();
+				stats_seen = 0;
+				// ensure we'll flush next time if we didnt now and next is empty
+				stats_match = ( ( stats_match >= stats_batch_size / 8 ) ? 1 : 0 );
+			}
+
+		} while ( reader->fetch_line() );
+
+		for ( unsigned i = 0 ; i < vals.size() ; ++i )
+			regfree( &vals_re[ i ] );
+		delete[] vals_re;
+	}
+#endif
 };
 
 static const char *usage =
@@ -1088,7 +1230,11 @@ static const char *usage =
 "csv select <col1>,<col2>,..  create a new csv with columns reordered\n"
 "csv listcol                  list csv column names, one per line\n"
 "csv addcol <col1>=<val1>,..  prepend an column to the csv with fixed value\n"
+#ifndef NO_REGEXP
 "csv grepcol <col1>=<val1>,.. create a csv with only the lines where colX has value X (regexp)\n"
+"                             with multiple colval, show line if any one match (c1=~v1 OR c2=~v2)\n"
+"                             add option -i for nocase, -v to invert\n"
+#endif
 ;
 
 int main ( int argc, char * argv[] )
@@ -1097,10 +1243,11 @@ int main ( int argc, char * argv[] )
 	char *outfile = NULL;
 	char sep = ',';
 	char quot = '"';
+	unsigned re_flags = 0;
 	bool has_headerline = true;
 
 
-	while ( (opt = getopt(argc, argv, "ho:s:q:H")) != -1 )
+	while ( (opt = getopt(argc, argv, "ho:s:q:Hiv")) != -1 )
 	{
 		switch (opt)
 		{
@@ -1124,6 +1271,16 @@ int main ( int argc, char * argv[] )
 			has_headerline = false;
 			break;
 
+#ifndef NO_REGEXP
+		case 'i':
+			re_flags |= 1 << RE_NOCASE;
+			break;
+
+		case 'v':
+			re_flags |= 1 << RE_INVERT;
+			break;
+#endif
+
 		default:
 			std::cerr << "Unknwon option: " << opt << std::endl << usage << std::endl;
 			return EXIT_FAILURE;
@@ -1144,7 +1301,7 @@ int main ( int argc, char * argv[] )
 		return EXIT_FAILURE;
 	}
 
-	csv_tool csv( &outbuf, sep, quot, has_headerline );
+	csv_tool csv( &outbuf, sep, quot, has_headerline, re_flags );
 
 	std::string mode = argv[optind++];
 
@@ -1207,6 +1364,25 @@ int main ( int argc, char * argv[] )
 				csv.addcol( colval, argv[ i ] );
 		}
 	}
+#ifndef NO_REGEXP
+	else if ( mode == "grepcol" )
+	{
+		if ( optind >= argc )
+		{
+			std::cerr << "No colval specified" << std::endl << usage << std::endl;
+			return EXIT_FAILURE;
+		}
+		std::string colval = argv[ optind++ ];
+
+		if ( optind >= argc )
+			csv.grepcol( colval, NULL );
+		else
+		{
+			for ( int i = optind ; i < argc ; ++i )
+				csv.grepcol( colval, argv[ i ] );
+		}
+	}
+#endif
 	else
 	{
 		std::cerr << "Unsupported mode " << mode << std::endl << usage << std::endl;

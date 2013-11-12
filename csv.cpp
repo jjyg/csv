@@ -9,7 +9,7 @@
 #include <errno.h>
 #include <regex.h>
 
-#define CSV_TOOL_VERSION "20131111"
+#define CSV_TOOL_VERSION "20131112"
 
 // wraps an istream, provide an efficient interface to read lines
 class line_reader
@@ -65,7 +65,7 @@ public:
 		return true;
 	}
 
-	explicit line_reader ( const char *filename, const unsigned line_max = 1024*1024 ) :
+	explicit line_reader ( const char *filename, const unsigned line_max = 64*1024 ) :
 		badfile(false),
 		buf_cur(0),
 		buf_end(0),
@@ -262,6 +262,7 @@ public:
 
 	void append_nl ( )
 	{
+		append( '\r' );
 		append( '\n' );
 	}
 
@@ -361,7 +362,7 @@ public:
 	}
 
 	// line_max is passed to the line_reader, it is also the limit for a full csv row (that may span many lines)
-	explicit csv_reader ( const char *filename, const char sep = ',', const char quot = '"', const unsigned line_max = 1024*1024 ) :
+	explicit csv_reader ( const char *filename, const char sep = ',', const char quot = '"', const unsigned line_max = 64*1024 ) :
 		line_max(line_max),
 		line_copy(NULL),
 		failed(false),

@@ -694,6 +694,7 @@ class csv_tool
 {
 private:
 	char sep;
+	char sep_out;
 	char quot;
 	unsigned csv_flags;
 
@@ -976,8 +977,9 @@ private:
 	}
 
 public:
-	explicit csv_tool ( output_buffer *outbuf, char sep = ',', char quot = '"', unsigned csv_flags = 0 ) :
+	explicit csv_tool ( output_buffer *outbuf, char sep = ',', char sep_out = ',', char quot = '"', unsigned csv_flags = 0 ) :
 		sep(sep),
+		sep_out(sep_out),
 		quot(quot),
 		csv_flags(csv_flags),
 		outbuf(outbuf),
@@ -1046,7 +1048,7 @@ public:
 			for ( unsigned i = 0 ; i < indexes->size() ; ++i )
 			{
 				if ( i > 0 )
-					outbuf->append( sep );
+					outbuf->append( sep_out );
 
 				int idx_in = (*indexes)[ i ];
 
@@ -1091,7 +1093,7 @@ public:
 			for ( unsigned idx_out = 0 ; idx_out < idx_len ; ++idx_out )
 			{
 				if ( idx_out > 0 )
-					outbuf->append( sep );
+					outbuf->append( sep_out );
 
 				if ( fld_off[ idx_out ] != (unsigned)-1 )
 					outbuf->append( line + fld_off[ idx_out ], fld_len[ idx_out ] );
@@ -1145,7 +1147,7 @@ public:
 			for ( unsigned i = 0 ; i < cols.size() ; ++i )
 			{
 				outbuf->append( reader->escape_csv_field( cols[i] ) );
-				outbuf->append( sep );
+				outbuf->append( sep_out );
 			}
 
 			for ( unsigned i = 0 ; i < headers->size() ; ++i )
@@ -1153,7 +1155,7 @@ public:
 				outbuf->append( reader->escape_csv_field( (*headers)[i] ) );
 
 				if ( i + 1 < headers->size() )
-					outbuf->append( sep );
+					outbuf->append( sep_out );
 			}
 
 			outbuf->append_nl();
@@ -1167,7 +1169,7 @@ public:
 			for ( unsigned i = 0 ; i < vals.size() ; ++i )
 			{
 				if ( i > 0 )
-					outbuf->append( sep );
+					outbuf->append( sep_out );
 				outbuf->append( vals[ i ] );
 			}
 
@@ -1176,7 +1178,7 @@ public:
 
 			while ( reader->read_csv_field( &fld, &fld_len, &fld_len ) )
 			{
-				outbuf->append( sep );
+				outbuf->append( sep_out );
 				outbuf->append( fld, fld_len );
 			}
 
@@ -1241,7 +1243,7 @@ public:
 			for ( unsigned i = 0 ; i < headers->size() ; ++i )
 			{
 				if ( i > 0 )
-					outbuf->append( sep );
+					outbuf->append( sep_out );
 
 				outbuf->append( reader->escape_csv_field( (*headers)[i] ) );
 			}
@@ -1340,7 +1342,7 @@ public:
 					headers->push_back( ultostring( colnum ) );
 
 				if ( colnum > 0 )
-					outbuf->append( sep );
+					outbuf->append( sep_out );
 
 				outbuf->append( headers->at( colnum ) );
 				outbuf->append( '=' );
@@ -1376,7 +1378,7 @@ public:
 		for ( int i = 0 ; i <= max_index ; ++i )
 		{
 			if ( i > 0 )
-				outbuf->append( ',' );
+				outbuf->append( sep );
 
 			if ( (unsigned)i < inv_indexes->size() && (*inv_indexes)[ i ] && (*inv_indexes)[ i ]->size() > 0 )
 			{
@@ -1419,6 +1421,7 @@ static const char *usage =
 "          -h                 display help (this text) and exit\n"
 "          -o <outfile>       specify output file (default=stdout)\n"
 "          -s <separator>     csv field separator (default=',')\n"
+"          -S <separator>     output csv field separator (default=sep) - do not use -s after this option ; ignored in rename\n"
 "          -q <quote>         csv quote character (default='\"')\n"
 "          -H                 csv files have no header line\n"
 "                             columns are specified as number (first col is 0)\n"
@@ -1447,6 +1450,9 @@ static char escape_char( const char c )
 {
 	switch ( c )
 	{
+	case '0':
+		return '\0';
+
 	case 't':
 		return '\t';
 
@@ -1468,10 +1474,11 @@ int main ( int argc, char * argv[] )
 	int opt;
 	char *outfile = NULL;
 	char sep = ',';
+	char sep_out = ',';
 	char quot = '"';
 	unsigned csv_flags = 0;
 
-	while ( (opt = getopt(argc, argv, "hVo:s:q:Hivu")) != -1 )
+	while ( (opt = getopt(argc, argv, "hVo:s:S:q:Hivu")) != -1 )
 	{
 		switch (opt)
 		{
@@ -1491,6 +1498,13 @@ int main ( int argc, char * argv[] )
 			sep = *optarg;
 			if ( sep == '\\' )
 				sep = escape_char( optarg[ 1 ] );
+			sep_out = sep;
+			break;
+
+		case 'S':
+			sep_out = *optarg;
+			if ( sep_out == '\\' )
+				sep_out = escape_char( optarg[ 1 ] );
 			break;
 
 		case 'q':
@@ -1531,7 +1545,7 @@ int main ( int argc, char * argv[] )
 	if ( outbuf.failed_to_open() )
 		return EXIT_FAILURE;
 
-	csv_tool csv( &outbuf, sep, quot, csv_flags );
+	csv_tool csv( &outbuf, sep, sep_out, quot, csv_flags );
 
 	std::string mode = argv[optind++];
 

@@ -9,7 +9,7 @@
 #include <errno.h>
 #include <regex.h>
 
-#define CSV_TOOL_VERSION "20131112"
+#define CSV_TOOL_VERSION "20131113"
 
 // wraps an istream, provide an efficient interface to read lines
 class line_reader
@@ -186,6 +186,19 @@ public:
 		refill_buffer();
 
 		return false;
+	}
+
+	// read raw data (dont mix with read_line)
+	void read ( char* *ptr, unsigned *len )
+	{
+		if ( *len > ( buf_end - buf_cur ) )
+			refill_buffer();
+
+		if ( *len > ( buf_end - buf_cur ) )
+			*len = buf_end - buf_cur;
+
+		*ptr = buf + buf_cur;
+		buf_cur += *len;
 	}
 
 private:
@@ -649,14 +662,32 @@ public:
 		return vec;
 	}
 
+	// read raw data (dont mix with read_*)
+	void read ( char* *ptr, unsigned *len )
+	{
+		if ( cur_field_offset < cur_line_length_nl )
+		{
+			if ( *len > ( cur_line_length_nl - cur_field_offset ) )
+				*len = cur_line_length_nl - cur_field_offset;
+			*ptr = cur_line + cur_field_offset;
+			cur_field_offset += *len;
+		}
+		else
+		{
+			input_lines->read( ptr, len );
+		}
+	}
+
 private:
 	csv_reader ( const csv_reader& );
 	csv_reader& operator=( const csv_reader& );
 };
 
 enum {
+	NO_HEADERLINE,
 	RE_NOCASE,
-	RE_INVERT
+	RE_INVERT,
+	UNIQ_COLS
 };
 
 class csv_tool
@@ -664,8 +695,9 @@ class csv_tool
 private:
 	char sep;
 	char quot;
-	bool has_headerline;
-	unsigned re_flags;
+	unsigned csv_flags;
+
+#define HAS_FLAG(f) ( csv_flags & ( 1 << f ) )
 
 	output_buffer *outbuf;
 
@@ -735,9 +767,9 @@ private:
 			return -1;
 
 		if ( headers )
-			for ( std::vector<std::string>::const_iterator head_it = headers->begin() ; head_it != headers->end() ; ++head_it )
-				if ( ! strcasecmp( str.c_str(), head_it->c_str() ) )
-					return head_it - headers->begin();
+			for ( unsigned i = 0 ; i < headers->size() ; ++i )
+				if ( ! strcasecmp( str.c_str(), (*headers)[ i ].c_str() ) )
+					return i;
 
 		int ret = 0;
 
@@ -780,10 +812,21 @@ private:
 			colspec_vec.push_back( colspec_str.substr( off ) );
 		}
 
+		// uniq_cols stuff: list colnames directly specified in colspec
+		std::vector<int> direct_cols;
+		if ( HAS_FLAG( UNIQ_COLS ) )
+			for ( unsigned i = 0 ; i < colspec_vec.size() ; ++i )
+			{
+				int idx = parse_index_uint( colspec_vec[ i ] );
+				if ( idx >= 0 )
+					direct_cols.push_back( idx );
+			}
+
+
 		// generate indexes, handle ranges in colspec_vec
-		for ( std::vector<std::string>::const_iterator spec_it = colspec_vec.begin() ; spec_it != colspec_vec.end() ; ++spec_it )
+		for ( unsigned i = 0 ; i < colspec_vec.size() ; ++i )
 		{
-			int idx = parse_index_uint( *spec_it );
+			int idx = parse_index_uint( colspec_vec[ i ] );
 
 			if ( idx != -1 )
 				indexes->push_back( idx );
@@ -795,10 +838,10 @@ private:
 
 				while (1)
 				{
-					dash_off = spec_it->find( '-', dash_off + 1 );
+					dash_off = colspec_vec[ i ].find( '-', dash_off + 1 );
 					if ( dash_off == std::string::npos )
 					{
-						std::cerr << "Column not found: " << *spec_it << std::endl;
+						std::cerr << "Column not found: " << colspec_vec[ i ] << std::endl;
 						indexes->push_back( -1 );
 						break;
 					}
@@ -807,17 +850,24 @@ private:
 					if ( dash_off == 0 )
 						min = 0;
 					else
-						min = parse_index_uint( spec_it->substr( 0, dash_off ) );
+						min = parse_index_uint( colspec_vec[ i ].substr( 0, dash_off ) );
 
-					if ( dash_off == spec_it->size() - 1 )
+					if ( dash_off == colspec_vec[ i ].size() - 1 )
 						max = max_index;
 					else
-						max = parse_index_uint( spec_it->substr( dash_off + 1 ) );
+						max = parse_index_uint( colspec_vec[ i ].substr( dash_off + 1 ) );
 
 					if ( min != -1 && max != -1 )
 					{
-						for ( int i = min ; i <= max ; ++i )
-							indexes->push_back( i );
+						for ( int range_idx = min ; range_idx <= max ; ++range_idx )
+						{
+							bool in_direct = false;
+							for ( unsigned j = 0 ; j < direct_cols.size() ; ++j )
+								if ( direct_cols[ j ] == range_idx )
+									in_direct = true;
+							if ( ! in_direct )
+								indexes->push_back( range_idx );
+						}
 
 						break;
 					}
@@ -855,7 +905,7 @@ private:
 			return false;
 		}
 
-		if ( has_headerline )
+		if ( ! HAS_FLAG( NO_HEADERLINE ) )
 		{
 			if ( ! reader->fetch_line() )
 			{
@@ -886,7 +936,7 @@ private:
 			size_t eq_off = colval.find( '=', off );
 			if ( eq_off == std::string::npos )
 			{
-				if ( has_headerline )
+				if ( ! HAS_FLAG( NO_HEADERLINE ) )
 				{
 					std::cerr << "Invalid colval: no '=' after " << colval.substr( off ) << std::endl;
 					return false;
@@ -914,12 +964,22 @@ private:
 		}
 	}
 
+	std::string ultostring ( const unsigned long nr, const char *fmt = "%lu" )
+	{
+		char buf[16];
+		unsigned buf_sz = snprintf( buf, sizeof(buf), fmt, nr );
+		if ( buf_sz > sizeof(buf) )
+			buf_sz = sizeof(buf);
+
+		std::string ret( buf, buf_sz );
+		return ret;
+	}
+
 public:
-	explicit csv_tool ( output_buffer *outbuf, char sep = ',', char quot = '"', bool has_headerline = true, unsigned re_flags = 0 ) :
+	explicit csv_tool ( output_buffer *outbuf, char sep = ',', char quot = '"', unsigned csv_flags = 0 ) :
 		sep(sep),
 		quot(quot),
-		has_headerline(has_headerline),
-		re_flags(re_flags),
+		csv_flags(csv_flags),
 		outbuf(outbuf),
 		reader(NULL),
 		headers(NULL),
@@ -1061,12 +1121,9 @@ public:
 		}
 		else
 		{
-			char buf[16];
 			for ( int i = 0 ; i <= max_index ; ++i )
 			{
-				unsigned sz = snprintf( buf, sizeof(buf), "%d", i );
-				if ( sz < sizeof(buf) )
-					outbuf->append( buf, sz );
+				outbuf->append( ultostring( i ) );
 				outbuf->append_nl();
 			}
 		}
@@ -1149,7 +1206,7 @@ public:
 		regex_t *vals_re = new regex_t[ vals.size() ];
 
 		int flags = REG_NOSUB | REG_EXTENDED;
-		if ( re_flags & ( 1 << RE_NOCASE ) )
+		if ( HAS_FLAG( RE_NOCASE ) )
 			flags |= REG_ICASE;
 
 		for ( unsigned i = 0 ; i < vals.size() ; ++i )
@@ -1204,7 +1261,7 @@ public:
 		const unsigned stats_batch_size = 16*1024;
 		unsigned stats_seen = 0;
 		unsigned stats_match = (headers ? 1 : 0);
-		bool invert = re_flags & ( 1 << RE_INVERT );
+		bool invert = HAS_FLAG( RE_INVERT );
 		do
 		{
 			char *line = NULL;
@@ -1265,16 +1322,9 @@ public:
 			return;
 
 		unsigned long lineno = 0;
-		char linebuf[16];
 		do
 		{
-			{
-				unsigned linebuf_sz = snprintf( linebuf, sizeof(linebuf), "%03lu:", lineno++ );
-				if ( linebuf_sz > sizeof(linebuf) )
-					linebuf_sz = sizeof(linebuf);
-				std::string linestr(linebuf, linebuf_sz);
-				outbuf->append( linestr );
-			}
+			outbuf->append( ultostring( lineno++, "%03lu:" ) );
 
 			// parse input row
 			char *fld = NULL;
@@ -1287,14 +1337,7 @@ public:
 					headers = new std::vector<std::string>;
 
 				if ( colnum >= headers->size() )
-				{
-					char fldbuf[16];
-					unsigned fldbuf_sz = snprintf( fldbuf, sizeof(fldbuf), "%u", colnum );
-					if ( fldbuf_sz > sizeof(fldbuf) )
-						fldbuf_sz = sizeof(fldbuf);
-					std::string fldstr(fldbuf, fldbuf_sz);
-					headers->push_back( fldstr );
-				}
+					headers->push_back( ultostring( colnum ) );
 
 				if ( colnum > 0 )
 					outbuf->append( sep );
@@ -1309,6 +1352,64 @@ public:
 		} while ( reader->fetch_line() );
 	}
 
+	// rename columns, always output a headerline, even with -H
+	void rename ( const std::string &colval, const char *filename )
+	{
+		std::vector<std::string> cols;
+		std::vector<std::string> vals;
+		if ( ! split_colvalspec( colval, &cols, &vals ) )
+			return;
+
+		std::string colspec;
+		for ( unsigned i = 0 ; i < cols.size() ; ++i )
+		{
+			if ( i > 0 )
+				colspec.push_back( ',' );
+
+			colspec.append( cols[ i ] );
+		}
+
+		if ( ! start_reader( colspec, filename ) )
+			return;
+
+		// generate new headerline
+		for ( int i = 0 ; i <= max_index ; ++i )
+		{
+			if ( i > 0 )
+				outbuf->append( ',' );
+
+			if ( (unsigned)i < inv_indexes->size() && (*inv_indexes)[ i ] && (*inv_indexes)[ i ]->size() > 0 )
+			{
+				// new colname in colvals
+				unsigned j = (*(*inv_indexes)[ i ])[ (*inv_indexes)[ i ]->size() - 1 ];
+				if ( j < vals.size() )
+					outbuf->append( vals[ j ] );
+				else
+					outbuf->append( ultostring( j ) );
+			}
+			else if ( headers && (unsigned)i < headers->size() )
+			{
+				// reuse old header name
+				outbuf->append( (*headers)[ i ] );
+			}
+			else
+			{
+				// create new header, use the column number
+				outbuf->append( ultostring( i ) );
+			}
+		}
+		outbuf->append_nl();
+
+		// copy end of file unchanged
+		while ( ! reader->eos() )
+		{
+			char *ptr = NULL;
+			unsigned len = 64*1024;
+
+			reader->read( &ptr, &len );
+			outbuf->append( ptr, len );
+		}
+	}
 };
 
 static const char *usage =
@@ -1323,11 +1424,14 @@ static const char *usage =
 "                             columns are specified as number (first col is 0)\n"
 "          -i                 case insensitive regex (grep mode)\n"
 "          -v                 invert regex: show non-matching lines (grep mode)\n"
+"          -u                 unique columns: do not include cols specified in colspec when expanding ranges\n"
+"                             useful to move cols, eg select -u col3,-,col1\n"
 "\n"
 "csv addcol <col1>=<val1>,..  prepend an column to the csv with fixed value\n"
 "csv extract <column>         extract one column data\n"
 "csv grepcol <col1>=<val1>,.. create a csv with only the lines where colX has value X (regexp)\n"
 "                             with multiple colval, show line if any one match (c1=~v1 OR c2=~v2)\n"
+"csv rename <col1>=<name>,..  rename columns\n"
 "csv select <col1>,<col2>,..  create a new csv with a subset/reordered columns\n"
 "csv listcol                  list csv column names, one per line\n"
 "csv inspect                  dump csv file, prefix each field with its column name\n"
@@ -1345,11 +1449,9 @@ int main ( int argc, char * argv[] )
 	char *outfile = NULL;
 	char sep = ',';
 	char quot = '"';
-	unsigned re_flags = 0;
-	bool has_headerline = true;
+	unsigned csv_flags = 0;
 
-
-	while ( (opt = getopt(argc, argv, "hVo:s:q:Hiv")) != -1 )
+	while ( (opt = getopt(argc, argv, "hVo:s:q:Hivu")) != -1 )
 	{
 		switch (opt)
 		{
@@ -1374,15 +1476,19 @@ int main ( int argc, char * argv[] )
 			break;
 
 		case 'H':
-			has_headerline = false;
+			csv_flags |= 1 << NO_HEADERLINE;
 			break;
 
 		case 'i':
-			re_flags |= 1 << RE_NOCASE;
+			csv_flags |= 1 << RE_NOCASE;
 			break;
 
 		case 'v':
-			re_flags |= 1 << RE_INVERT;
+			csv_flags |= 1 << RE_INVERT;
+			break;
+
+		case 'u':
+			csv_flags |= 1 << UNIQ_COLS;
 			break;
 
 		default:
@@ -1401,7 +1507,7 @@ int main ( int argc, char * argv[] )
 	if ( outbuf.failed_to_open() )
 		return EXIT_FAILURE;
 
-	csv_tool csv( &outbuf, sep, quot, has_headerline, re_flags );
+	csv_tool csv( &outbuf, sep, quot, csv_flags );
 
 	std::string mode = argv[optind++];
 
@@ -1424,7 +1530,7 @@ int main ( int argc, char * argv[] )
 	{
 		if ( optind >= argc )
 		{
-			std::cerr << "No column specified" << std::endl << usage << std::endl;
+			std::cerr << "No columns specified" << std::endl << usage << std::endl;
 			return EXIT_FAILURE;
 		}
 		std::string colspec = argv[ optind++ ];
@@ -1435,6 +1541,24 @@ int main ( int argc, char * argv[] )
 		{
 			for ( int i = optind ; i < argc ; ++i )
 				csv.select( colspec, argv[ i ], (i == optind) );
+		}
+	}
+	else if ( mode == "rename" || mode == "r" )
+	{
+		if ( optind >= argc )
+		{
+			std::cerr << "No columns specified" << std::endl << usage << std::endl;
+			return EXIT_FAILURE;
+		}
+		std::string colval = argv[ optind++ ];
+
+		if ( optind >= argc )
+			csv.rename( colval, NULL );
+		else
+		{
+			// XXX output headers for every file
+			for ( int i = optind ; i < argc ; ++i )
+				csv.rename( colval, argv[ i ] );
 		}
 	}
 	else if ( mode == "listcol" || mode == "l" )

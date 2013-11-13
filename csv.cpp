@@ -1443,6 +1443,26 @@ static const char *version_info =
 "Licensed under the WtfPLv2, see http://www.wtfpl.net/\n"
 ;
 
+static char escape_char( const char c )
+{
+	switch ( c )
+	{
+	case 't':
+		return '\t';
+
+	case 'f':
+		return '\f';
+
+	case '\\':
+		return '\\';
+
+	default:
+		std::cerr << "Unhandled separator, using coma" << std::endl;
+	}
+
+	return ',';
+}
+
 int main ( int argc, char * argv[] )
 {
 	int opt;
@@ -1469,10 +1489,14 @@ int main ( int argc, char * argv[] )
 
 		case 's':
 			sep = *optarg;
+			if ( sep == '\\' )
+				sep = escape_char( optarg[ 1 ] );
 			break;
 
 		case 'q':
 			quot = *optarg;
+			if ( quot == '\\' )
+				quot = escape_char( optarg[ 1 ] );
 			break;
 
 		case 'H':

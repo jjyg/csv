@@ -1176,7 +1176,7 @@ public:
 			char *fld = NULL;
 			unsigned fld_len = 0;
 
-			while ( reader->read_csv_field( &fld, &fld_len, &fld_len ) )
+			while ( reader->read_csv_field( &fld, &fld_len ) )
 			{
 				outbuf->append( sep_out );
 				outbuf->append( fld, fld_len );

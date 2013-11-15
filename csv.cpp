@@ -363,7 +363,7 @@ public:
 		if ( cur_field_offset <= cur_line_length )
 			return false;
 
-		if ( !input_lines->eos() )
+		if ( ! input_lines->eos() )
 			return false;
 
 		return true;
@@ -919,12 +919,12 @@ private:
 			headers = reader->parse_line();
 		}
 
-		bool retval = reader->fetch_line();
+		reader->fetch_line();
 		count_max_index();
 
 		parse_colspec( colspec );
 
-		return retval;
+		return true;
 	}
 
 	// split a string "k1=v1,k2=v2,k3=v3" into vectors [k1, k2, k3] and [v1, v2, v3]

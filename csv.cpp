@@ -8,6 +8,7 @@
 #include <vector>
 #include <errno.h>
 #include <regex.h>
+#include <tr1/unordered_set>
 
 #define CSV_TOOL_VERSION "20131113"
 
@@ -976,6 +977,16 @@ private:
 		return ret;
 	}
 
+	std::string str_downcase( const std::string &str )
+	{
+		std::string ret;
+
+		for ( unsigned i = 0 ; i < str.size() ; ++i )
+			ret.push_back( tolower( str[ i ] ) );
+
+		return ret;
+	}
+
 public:
 	explicit csv_tool ( output_buffer *outbuf, char sep = ',', char sep_out = ',', char quot = '"', unsigned csv_flags = 0 ) :
 		sep(sep),
@@ -1187,6 +1198,7 @@ public:
 		} while ( reader->fetch_line() );
 	}
 
+
 	// filter csv, display only lines whose field value match a regexp
 	void grepcol ( const std::string &colval, const char *filename )
 	{
@@ -1314,6 +1326,146 @@ public:
 		delete[] vals_re;
 	}
 
+
+	// filter csv, display only lines whose field appears on a file line
+	void fgrepcol ( const std::string &colval, const char *filename )
+	{
+		std::vector<std::string> cols;
+		std::vector<std::string> vals;
+		if ( ! split_colvalspec( colval, &cols, &vals ) )
+			return;
+
+		// merge cols in a colspec
+		std::string colspec;
+		for ( unsigned i = 0 ; i < cols.size() ; ++i )
+		{
+			if ( i > 0 )
+				colspec.push_back( ',' );
+
+			colspec.append( cols[ i ] );
+		}
+
+		std::tr1::unordered_set<std::string> *vals_set = new std::tr1::unordered_set<std::string>[ vals.size() ];
+
+		bool nocase = HAS_FLAG( RE_NOCASE );
+
+		for ( unsigned i = 0 ; i < vals.size() ; ++i )
+		{
+			std::string line;
+			std::ifstream in(vals[ i ].c_str());
+
+			if ( ! in )
+			{
+				std::cerr << "Cannot open " << vals[ i ] << ": " << strerror( errno ) << std::endl;
+				delete[] vals_set;
+
+				return;
+			}
+
+			while ( std::getline( in, line ) )
+			{
+				if ( line.size() > 0 && line[ line.size() - 1 ] == '\n' )
+					line.erase( line.size() - 1 );
+				if ( line.size() > 0 && line[ line.size() - 1 ] == '\r' )
+					line.erase( line.size() - 1 );
+
+				if ( nocase )
+					vals_set[ i ].insert( str_downcase( line ) );
+				else
+					vals_set[ i ].insert( line );
+			}
+		}
+
+		if ( ! start_reader( colspec, filename ) )
+		{
+			delete[] vals_set;
+
+			return;
+		}
+
+		if ( headers )
+		{
+			for ( unsigned i = 0 ; i < headers->size() ; ++i )
+			{
+				if ( i > 0 )
+					outbuf->append( sep_out );
+
+				outbuf->append( reader->escape_csv_field( (*headers)[i] ) );
+			}
+
+			outbuf->append_nl();
+		}
+
+		if ( reader->eos() )
+		{
+			delete[] vals_set;
+
+			return;
+		}
+
+		const unsigned stats_batch_size = 16*1024;
+		unsigned stats_seen = 0;
+		unsigned stats_match = (headers ? 1 : 0);
+		bool invert = HAS_FLAG( RE_INVERT );
+		do
+		{
+			char *line = NULL;
+			unsigned f_off = 0, f_len = 0;
+			unsigned idx_in = 0;
+			bool show = false;
+
+			while ( reader->read_csv_field( &line, &f_off, &f_len ) )
+			{
+				if ( ( idx_in < inv_indexes->size() ) && ( (*inv_indexes)[ idx_in ] ) )
+				{
+					std::string str;
+					char *ptr = line + f_off;
+					reader->unescape_csv_field( &ptr, &f_len, &str );
+
+					for ( unsigned i = 0 ; i < (*inv_indexes)[ idx_in ]->size() ; ++i )
+					{
+						unsigned idx_g = (*(*inv_indexes)[ idx_in ])[ i ];
+						if ( idx_g >= vals.size() )
+							continue;
+
+						if ( nocase )
+						{
+							if ( vals_set[ idx_g ].count( str_downcase( str ) ) > 0 )
+								show = true;
+						}
+						else
+						{
+							if ( vals_set[ idx_g ].count( str ) > 0 )
+								show = true;
+						}
+					}
+				}
+				++idx_in;
+			}
+
+			if ( show ^ invert )
+			{
+				outbuf->append( line, f_off + f_len );
+				outbuf->append_nl();
+				++stats_match;
+			}
+			++stats_seen;
+
+			// manually flush if output is sparse
+			if ( stats_seen > stats_batch_size )
+			{
+				if ( ( stats_match > 0 ) && ( stats_match < stats_batch_size / 8 ) )
+					outbuf->flush();
+				stats_seen = 0;
+				// ensure we'll flush next time if we didnt now and next is empty
+				stats_match = ( ( stats_match >= stats_batch_size / 8 ) ? 1 : 0 );
+			}
+
+		} while ( reader->fetch_line() );
+
+		delete[] vals_set;
+	}
+
 	// dump csv rows, prefix each field with its colname
 	void inspect ( const char *filename )
 	{
@@ -1434,6 +1586,8 @@ static const char *usage =
 "csv extract <column>         extract one column data\n"
 "csv grepcol <col1>=<val1>,.. create a csv with only the lines where colX has value X (regexp)\n"
 "                             with multiple colval, show line if any one match (c1=~v1 OR c2=~v2)\n"
+"csv fgrepcol <col1>=<f1>,..  create a csv with only the lines where colX has a value appearing exactly as a line of file fX\n"
+"                             similar to grep -f -F ; options -v and -i work\n"
 "csv rename <col1>=<name>,..  rename columns\n"
 "csv select <col1>,<col2>,..  create a new csv with a subset/reordered columns\n"
 "csv listcol                  list csv column names, one per line\n"
@@ -1641,6 +1795,23 @@ int main ( int argc, char * argv[] )
 		{
 			for ( int i = optind ; i < argc ; ++i )
 				csv.grepcol( colval, argv[ i ] );
+		}
+	}
+	else if ( mode == "fgrepcol" || mode == "fgrep" || mode == "f" )
+	{
+		if ( optind >= argc )
+		{
+			std::cerr << "No colval specified" << std::endl << usage << std::endl;
+			return EXIT_FAILURE;
+		}
+		std::string colval = argv[ optind++ ];
+
+		if ( optind >= argc )
+			csv.fgrepcol( colval, NULL );
+		else
+		{
+			for ( int i = optind ; i < argc ; ++i )
+				csv.fgrepcol( colval, argv[ i ] );
 		}
 	}
 	else if ( mode == "inspect" || mode == "i" )

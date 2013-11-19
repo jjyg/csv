@@ -705,9 +705,11 @@ private:
 
 	csv_reader *reader;
 	std::vector<std::string> *headers;
-	std::vector<int> *indexes;
-	std::vector< std::vector<unsigned>* > *inv_indexes;
-	int max_index;
+	std::vector<int> indexes;
+	std::vector< std::vector<unsigned> > inv_indexes;
+	unsigned max_index;
+	std::string out_colspec;
+
 
 	void cleanup ( )
 	{
@@ -723,28 +725,16 @@ private:
 			headers = NULL;
 		}
 
-		if ( indexes )
-		{
-			delete indexes;
-			indexes = NULL;
-		}
-
-		if ( inv_indexes )
-		{
-			for ( unsigned i = 0 ; i < inv_indexes->size() ; ++i )
-				if ( (*inv_indexes)[ i ] )
-					delete (*inv_indexes)[ i ];
-
-			delete inv_indexes;
-			inv_indexes = NULL;
-		}
+		indexes.clear();
+		inv_indexes.clear();
+		out_colspec.clear();
 	}
 
 	void count_max_index ( )
 	{
 		if ( headers )
 		{
-			max_index = headers->size() - 1;
+			max_index = headers->size();
 			return;
 		}
 
@@ -752,7 +742,7 @@ private:
 		char *ptr = NULL;
 		unsigned len = 0;
 
-		max_index = -1;
+		max_index = 0;
 		while ( reader->read_csv_field( &ptr, &len ) )
 			++max_index;
 
@@ -761,7 +751,7 @@ private:
 	}
 
 	// return the index of the string str in the string vector headers (case insensitive)
-	// checks for numeric indexes if not found (decimal, [0-9]+), <= max_index
+	// checks for numeric indexes if not found (decimal, [0-9]+), < max_index
 	// return -1 if not found
 	int parse_index_uint( const std::string &str ) const
 	{
@@ -773,7 +763,7 @@ private:
 				if ( ! strcasecmp( str.c_str(), (*headers)[ i ].c_str() ) )
 					return i;
 
-		int ret = 0;
+		unsigned ret = 0;
 
 		for ( unsigned i = 0 ; i < str.size() ; ++i )
 		{
@@ -783,10 +773,10 @@ private:
 			ret = ret * 10 + (str[i] - '0');
 		}
 
-		if ( ret > max_index )
-			return -1;
+		if ( ret < max_index )
+			return ret;
 
-		return ret;
+		return -1;
 	}
 
 	// Parse a colspec string (coma-separated list of column names), populate 'indexes'
@@ -796,10 +786,10 @@ private:
 	//
 	// if a column is not found, its index is set as -1. For ranges, if begin or end is not found, add a single -1 index.
 	// without a header list, the current line is parsed and reset to count the fields per row
+	//
+	// populates out_colspec with the expanded ranges, keeps colnames (including unknown cols) when possible
 	void parse_colspec( const std::string &colspec_str )
 	{
-		indexes = new std::vector<int>;
-
 		// parse colspec_str: split on comas
 		std::vector<std::string> colspec_vec;
 
@@ -831,7 +821,13 @@ private:
 			int idx = parse_index_uint( colspec_vec[ i ] );
 
 			if ( idx != -1 )
-				indexes->push_back( idx );
+			{
+				indexes.push_back( idx );
+
+				if ( i > 0 )
+					out_colspec.push_back( ',' );
+				out_colspec.append( colspec_vec[ i ] );
+			}
 			else
 			{
 				// check for ranges
@@ -844,7 +840,12 @@ private:
 					if ( dash_off == std::string::npos )
 					{
 						std::cerr << "Column not found: " << colspec_vec[ i ] << std::endl;
-						indexes->push_back( -1 );
+						indexes.push_back( -1 );
+
+						if ( i > 0 )
+							out_colspec.push_back( ',' );
+						out_colspec.append( colspec_vec[ i ] );
+
 						break;
 					}
 
@@ -855,11 +856,11 @@ private:
 						min = parse_index_uint( colspec_vec[ i ].substr( 0, dash_off ) );
 
 					if ( dash_off == colspec_vec[ i ].size() - 1 )
-						max = max_index;
+						max = max_index - 1;
 					else
 						max = parse_index_uint( colspec_vec[ i ].substr( dash_off + 1 ) );
 
-					if ( min != -1 && max != -1 )
+					if ( min >= 0 && max >= 0 )
 					{
 						for ( int range_idx = min ; range_idx <= max ; ++range_idx )
 						{
@@ -867,8 +868,19 @@ private:
 							for ( unsigned j = 0 ; j < direct_cols.size() ; ++j )
 								if ( direct_cols[ j ] == range_idx )
 									in_direct = true;
+
 							if ( ! in_direct )
-								indexes->push_back( range_idx );
+							{
+								indexes.push_back( range_idx );
+
+								if ( out_colspec.size() > 0 )
+									out_colspec.push_back( ',' );
+
+								if ( headers && (unsigned)range_idx < headers->size() )
+									out_colspec.append( (*headers)[ range_idx ] );
+								else
+									out_colspec.append( ultostring( range_idx ) );
+							}
 						}
 
 						break;
@@ -878,18 +890,15 @@ private:
 		}
 
 		// inv[ input col idx ] = [ out col idx, out col idx ]
-		inv_indexes = new std::vector< std::vector<unsigned>* >( max_index + 1 );
-		for ( unsigned idx_out = 0 ; idx_out < indexes->size() ; ++idx_out )
+		inv_indexes.resize( max_index );
+		for ( unsigned idx_out = 0 ; idx_out < indexes.size() ; ++idx_out )
 		{
-			int idx_in = (*indexes)[ idx_out ];
+			int idx_in = indexes[ idx_out ];
 
 			if ( idx_in == -1 )
 				continue;
 
-			if ( ! (*inv_indexes)[ idx_in ] )
-				(*inv_indexes)[ idx_in ] = new std::vector<unsigned>;
-
-			(*inv_indexes)[ idx_in ]->push_back( idx_out );
+			inv_indexes[ idx_in ].push_back( idx_out );
 		}
 	}
 
@@ -996,9 +1005,11 @@ public:
 		outbuf(outbuf),
 		reader(NULL),
 		headers(NULL),
-		indexes(NULL),
-		inv_indexes(NULL)
+		max_index(0)
 	{
+		indexes.clear();
+		inv_indexes.clear();
+		out_colspec.clear();
 	}
 
 	~csv_tool ( )
@@ -1013,7 +1024,7 @@ public:
 		if ( ! start_reader( colspec, filename ) )
 			return;
 
-		if ( indexes->size() != 1 || (*indexes)[0] < 0 )
+		if ( indexes.size() != 1 || indexes[0] < 0 )
 		{
 			std::cerr << "Invalid colspec" << std::endl;
 			return;
@@ -1030,7 +1041,7 @@ public:
 
 			while ( reader->read_csv_field( &ptr, &len ) )
 			{
-				if ( ( idx_in < inv_indexes->size() ) && ( (*inv_indexes)[ idx_in ] ) )
+				if ( ( idx_in < inv_indexes.size() ) && ( inv_indexes[ idx_in ].size() > 0 ) )
 				{
 					std::string *str = reader->unescape_csv_field( &ptr, &len );
 					if ( str )
@@ -1049,19 +1060,20 @@ public:
 
 
 	// output a csv containing the columns from colspec of the input csv
-	void select ( const std::string &colspec, const char *filename, bool show_headers )
+	// return the expanded colspec used for the file (to reuse for next files)
+	std::string select ( const std::string &colspec, const char *filename, bool show_headers )
 	{
 		if ( ! start_reader( colspec, filename ) )
-			return;
+			return out_colspec;
 
 		if ( show_headers && headers )
 		{
-			for ( unsigned i = 0 ; i < indexes->size() ; ++i )
+			for ( unsigned i = 0 ; i < indexes.size() ; ++i )
 			{
 				if ( i > 0 )
 					outbuf->append( sep_out );
 
-				int idx_in = (*indexes)[ i ];
+				int idx_in = indexes[ i ];
 
 				if ( idx_in != -1 )
 					outbuf->append( reader->escape_csv_field( (*headers)[ idx_in ] ) );
@@ -1070,9 +1082,9 @@ public:
 		}
 
 		if ( reader->eos() )
-			return;
+			return out_colspec;
 
-		unsigned idx_len = indexes->size();
+		unsigned idx_len = indexes.size();
 		unsigned *fld_off = new unsigned[ idx_len ];
 		unsigned *fld_len = new unsigned[ idx_len ];
 
@@ -1087,12 +1099,12 @@ public:
 			unsigned idx_in = 0;
 			while ( reader->read_csv_field( &line, &f_off, &f_len ) )
 			{
-				if ( idx_in < inv_indexes->size() && (*inv_indexes)[ idx_in ] )
+				if ( idx_in < inv_indexes.size() && inv_indexes[ idx_in ].size() )
 				{
 					// current input field appears in output, save its off+len
-					for ( unsigned i = 0 ; i < (*inv_indexes)[ idx_in ]->size() ; ++i )
+					for ( unsigned i = 0 ; i < inv_indexes[ idx_in ].size() ; ++i )
 					{
-						unsigned idx_out = (*(*inv_indexes)[ idx_in ])[ i ];
+						unsigned idx_out = inv_indexes[ idx_in ][ i ];
 						fld_off[ idx_out ] = f_off;
 						fld_len[ idx_out ] = f_len;
 					}
@@ -1116,6 +1128,8 @@ public:
 
 		delete[] fld_off;
 		delete[] fld_len;
+
+		return out_colspec;
 	}
 
 	// list columns of the file (indexes if -H)
@@ -1134,7 +1148,7 @@ public:
 		}
 		else
 		{
-			for ( int i = 0 ; i <= max_index ; ++i )
+			for ( unsigned i = 0 ; i < max_index ; ++i )
 			{
 				outbuf->append( ultostring( i ) );
 				outbuf->append_nl();
@@ -1285,15 +1299,15 @@ public:
 
 			while ( reader->read_csv_field( &line, &f_off, &f_len ) )
 			{
-				if ( ( idx_in < inv_indexes->size() ) && ( (*inv_indexes)[ idx_in ] ) )
+				if ( ( idx_in < inv_indexes.size() ) && ( inv_indexes[ idx_in ].size() ) )
 				{
 					std::string str;
 					char *ptr = line + f_off;
 					reader->unescape_csv_field( &ptr, &f_len, &str );
 
-					for ( unsigned i = 0 ; i < (*inv_indexes)[ idx_in ]->size() ; ++i )
+					for ( unsigned i = 0 ; i < inv_indexes[ idx_in ].size() ; ++i )
 					{
-						unsigned idx_g = (*(*inv_indexes)[ idx_in ])[ i ];
+						unsigned idx_g = inv_indexes[ idx_in ][ i ];
 						if ( idx_g < vals.size() && regexec( &vals_re[ idx_g ], str.c_str(), 0, NULL, 0 ) != REG_NOMATCH )
 							show = true;
 					}
@@ -1416,15 +1430,15 @@ public:
 
 			while ( reader->read_csv_field( &line, &f_off, &f_len ) )
 			{
-				if ( ( idx_in < inv_indexes->size() ) && ( (*inv_indexes)[ idx_in ] ) )
+				if ( ( idx_in < inv_indexes.size() ) && inv_indexes[ idx_in ].size() )
 				{
 					std::string str;
 					char *ptr = line + f_off;
 					reader->unescape_csv_field( &ptr, &f_len, &str );
 
-					for ( unsigned i = 0 ; i < (*inv_indexes)[ idx_in ]->size() ; ++i )
+					for ( unsigned i = 0 ; i < inv_indexes[ idx_in ].size() ; ++i )
 					{
-						unsigned idx_g = (*(*inv_indexes)[ idx_in ])[ i ];
+						unsigned idx_g = inv_indexes[ idx_in ][ i ];
 						if ( idx_g >= vals.size() )
 							continue;
 
@@ -1527,15 +1541,15 @@ public:
 			return;
 
 		// generate new headerline
-		for ( int i = 0 ; i <= max_index ; ++i )
+		for ( unsigned i = 0 ; i < max_index ; ++i )
 		{
 			if ( i > 0 )
 				outbuf->append( sep );
 
-			if ( (unsigned)i < inv_indexes->size() && (*inv_indexes)[ i ] && (*inv_indexes)[ i ]->size() > 0 )
+			if ( i < inv_indexes.size() && inv_indexes[ i ].size() )
 			{
 				// new colname in colvals
-				unsigned j = (*(*inv_indexes)[ i ])[ (*inv_indexes)[ i ]->size() - 1 ];
+				unsigned j = inv_indexes[ i ][ inv_indexes[ i ].size() - 1 ];
 				if ( j < vals.size() )
 					outbuf->append( vals[ j ] );
 				else
@@ -1732,7 +1746,7 @@ int main ( int argc, char * argv[] )
 		else
 		{
 			for ( int i = optind ; i < argc ; ++i )
-				csv.select( colspec, argv[ i ], (i == optind) );
+				colspec = csv.select( colspec, argv[ i ], (i == optind) );
 		}
 	}
 	else if ( mode == "rename" || mode == "r" )

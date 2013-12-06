@@ -10,9 +10,11 @@
 #include <regex.h>
 #include <tr1/unordered_set>
 
-#define CSV_TOOL_VERSION "20131113"
+#define CSV_TOOL_VERSION "20131206"
 
 // wraps an istream, provide an efficient interface to read lines
+// skips UTF-8 BOM
+// interprets UTF-16 BOMs, return iso codepoints - out of range characters are converted to '?'
 class line_reader
 {
 private:
@@ -26,7 +28,47 @@ private:
 	unsigned buf_size;
 	char *buf;
 
+	// bitmask
+	enum {
+		INPUT_FILTER_UTF16BE=1,
+		INPUT_FILTER_UTF16LE=2,
+	};
+	int input_filter;
+
+	// convert utf16 codepoints inplace in buf
+	// return the offset after the last valid character converted
+	unsigned filter_input ( unsigned off_start, unsigned off_end )
+	{
+		if ( (input_filter & INPUT_FILTER_UTF16BE) || (input_filter & INPUT_FILTER_UTF16LE) )
+		{
+			unsigned off_in = off_start;
+			unsigned off_out = off_start;
+			unsigned high = 0, low = 1;
+			if ( input_filter & INPUT_FILTER_UTF16LE )
+				high = 1, low = 0;
+
+			while ( off_in < off_end )
+			{
+				if ( buf[ off_in + high ] )
+				{
+					buf[ off_out++ ] = '?';
+					off_in += 2;
+				}
+				else
+				{
+					buf[ off_out++ ] = buf[ off_in + low ];
+					off_in += 2;
+				}
+			}
+
+			return off_out;
+		}
+
+		return off_end;
+	}
+
 	// memmove buf_cur to buf_start, fill buf_end..buf_size with freshly read data
+	// convert utf16 according to input_filter
 	void refill_buffer ( )
 	{
 		if ( buf_cur > 0 )
@@ -41,10 +83,21 @@ private:
 
 		if ( buf_end < buf_size )
 		{
-			input->read( buf + buf_end, buf_size - buf_end );
+			unsigned toread = buf_size - buf_end;
+			unsigned old_end = buf_end;
+			if ( (input_filter & INPUT_FILTER_UTF16BE) || (input_filter & INPUT_FILTER_UTF16LE) )
+				toread -= toread & 1;
+
+			if ( toread == 0 )
+				return;
+
+			input->read( buf + buf_end, toread );
 			buf_end += input->gcount();
 			if (buf_end > buf_size)
 				buf_end = buf_cur;	// just in case
+
+			if ( input_filter )
+				buf_end = filter_input( old_end, buf_end );
 		}
 	}
 
@@ -70,7 +123,8 @@ public:
 		badfile(false),
 		buf_cur(0),
 		buf_end(0),
-		buf_size(line_max)
+		buf_size(line_max),
+		input_filter(0)
 	{
 		buf = new char[buf_size];
 
@@ -105,9 +159,25 @@ public:
 		input->read( buf, (buf_size > 4096 ? buf_size/16 : buf_size) );
 		buf_end = input->gcount();
 
-		// discard utf-8 BOM
-		if ( (buf_end >= 3) && buf[0] == '\xef' && buf[1] == '\xbb' && buf[2] == '\xbf' )
+		if ( buf_end >= 3 && buf[0] == '\xef' && buf[1] == '\xbb' && buf[2] == '\xbf' )
+		{
+			// discard utf-8 BOM
 			buf_cur += 3;
+		}
+		else if ( buf_end >= 2 && buf[0] == '\xfe' && buf[1] == '\xff')
+		{
+			// utf-16be BOM
+			buf_cur += 2;
+			input_filter = INPUT_FILTER_UTF16BE;
+			buf_end = filter_input( buf_cur, buf_end );
+		}
+		else if ( buf_end >= 2 && buf[0] == '\xff' && buf[1] == '\xfe')
+		{
+			// utf-16le BOM
+			buf_cur += 2;
+			input_filter = INPUT_FILTER_UTF16LE;
+			buf_end = filter_input( buf_cur, buf_end );
+		}
 	}
 
 	~line_reader ( )

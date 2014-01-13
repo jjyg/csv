@@ -990,7 +990,6 @@ private:
 		{
 			if ( ! reader->fetch_line() )
 			{
-				std::cerr << "Empty file" << std::endl;
 				cleanup();
 				return false;
 			}

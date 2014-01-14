@@ -1775,6 +1775,76 @@ public:
 			outbuf->append( ptr, len );
 		}
 	}
+
+	// output a csv with a column values converted from hex (0x42) to decimal (66)
+	// 64-bit range
+	void decimal ( const std::string &colspec, const char *filename )
+	{
+		if ( ! start_reader( colspec, filename ) )
+			return;
+
+		if ( headers )
+		{
+			for ( unsigned i = 0 ; i < headers->size() ; ++i )
+			{
+				if ( i > 0 )
+					outbuf->append( sep_out );
+
+				outbuf->append( reader->escape_csv_field( (*headers)[ i ] ) );
+			}
+			outbuf->append_nl();
+		}
+
+		if ( reader->eos() )
+			return;
+
+		do
+		{
+			char *fld = NULL;
+			unsigned fld_len = 0;
+			unsigned colnum = 0;
+
+			while ( reader->read_csv_field( &fld, &fld_len ) )
+			{
+				if ( colnum > 0 )
+					outbuf->append( sep_out );
+
+				if ( inv_indexes[ colnum ].size() )
+				{
+					char *fld_dup = fld;
+					unsigned fld_len_dup = fld_len;
+					std::string hex;
+					reader->unescape_csv_field( &fld_dup, &fld_len_dup, &hex );
+
+					unsigned long long v;
+					int minus = 0;
+
+					if ( hex.size() > 0 && hex[0] == '-' )
+					{
+						minus = 1;
+						hex = hex.substr( 1 );
+					}
+
+					if ( ! str_ull( hex, &v ) )
+						outbuf->append( fld, fld_len );
+					else
+					{
+						if ( minus )
+							outbuf->append( '-' );
+						outbuf->append( ull_str( v ) );
+					}
+				}
+				else
+					outbuf->append( fld, fld_len );
+
+				++colnum;
+			}
+
+			outbuf->append_nl();
+
+		} while ( reader->fetch_line() );
+	}
+
 };
 
 static const char *usage =
@@ -1804,6 +1874,7 @@ static const char *usage =
 "csv listcol                  list csv column names, one per line\n"
 "csv inspect                  dump csv file, prefix each field with its column name\n"
 "csv rows <min>-<max>         dump selected row range from file\n"
+"csv decimal <cols>           convert selected columns to decimal int64 representation\n"
 ;
 
 static const char *version_info =
@@ -2051,6 +2122,23 @@ int main ( int argc, char * argv[] )
 		{
 			for ( int i = optind ; i < argc ; ++i )
 				csv.rows( rowspec, argv[ i ] );
+		}
+	}
+	else if ( mode == "decimal" || mode == "dec" )
+	{
+		if ( optind >= argc )
+		{
+			std::cerr << "No columns specified" << std::endl << usage << std::endl;
+			return EXIT_FAILURE;
+		}
+		std::string colspec = argv[ optind++ ];
+
+		if ( optind >= argc )
+			csv.decimal( colspec, NULL );
+		else
+		{
+			for ( int i = optind ; i < argc ; ++i )
+				csv.decimal( colspec, argv[ i ] );
 		}
 	}
 	else

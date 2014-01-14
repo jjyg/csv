@@ -1253,6 +1253,59 @@ public:
 		return out_colspec;
 	}
 
+
+	// output a csv with some columns removed
+	void deselect ( const std::string &colspec, const char *filename )
+	{
+		if ( ! start_reader( colspec, filename ) )
+			return;
+
+		if ( headers )
+		{
+			unsigned colnum_out = 0;
+
+			for ( unsigned i = 0 ; i < headers->size() ; ++i )
+			{
+				if ( inv_indexes[ i ].size() )
+					continue;
+
+				if ( colnum_out++ > 0 )
+					outbuf->append( sep_out );
+
+				outbuf->append( reader->escape_csv_field( (*headers)[ i ] ) );
+
+				++colnum_out;
+			}
+			outbuf->append_nl();
+		}
+
+		if ( reader->eos() )
+			return;
+
+		do
+		{
+			char *fld = NULL;
+			unsigned fld_len = 0;
+			unsigned colnum = 0;
+			unsigned colnum_out = 0;
+
+			while ( reader->read_csv_field( &fld, &fld_len ) )
+			{
+				if ( inv_indexes[ colnum++ ].size() )
+					continue;
+
+				if ( colnum_out++ > 0 )
+					outbuf->append( sep_out );
+
+				outbuf->append( fld, fld_len );
+			}
+
+			outbuf->append_nl();
+
+		} while ( reader->fetch_line() );
+	}
+
+
 	// list columns of the file (indexes if -H)
 	void listcol ( const char *filename )
 	{
@@ -1276,6 +1329,7 @@ public:
 			}
 		}
 	}
+
 
 	// prepend fields to every row (ignore added colnames if -H)
 	void addcol ( const std::string &colval, const char *filename )
@@ -1601,6 +1655,7 @@ public:
 		delete[] vals_set;
 	}
 
+
 	// dump csv rows, prefix each field with its colname
 	void inspect ( const char *filename )
 	{
@@ -1640,6 +1695,7 @@ public:
 
 		} while ( reader->fetch_line() );
 	}
+
 
 	// dump a range of csv rows
 	// range is [row_start]-[row_end] (included, first row = 0)
@@ -1720,6 +1776,7 @@ public:
 		} while ( reader->fetch_line() );
 	}
 
+
 	// rename columns, always output a headerline, even with -H
 	void rename ( const std::string &colval, const char *filename )
 	{
@@ -1778,6 +1835,7 @@ public:
 			outbuf->append( ptr, len );
 		}
 	}
+
 
 	// output a csv with a column values converted from hex (0x42) to decimal (66)
 	// 64-bit range
@@ -1847,7 +1905,6 @@ public:
 
 		} while ( reader->fetch_line() );
 	}
-
 };
 
 static const char *usage =
@@ -1874,6 +1931,7 @@ static const char *usage =
 "                             similar to grep -f -F ; options -v and -i work\n"
 "csv rename <col1>=<name>,..  rename columns\n"
 "csv select <col1>,<col2>,..  create a new csv with a subset/reordered columns\n"
+"csv deselect <cols>          create a new csv with the specified columns removed\n"
 "csv listcol                  list csv column names, one per line\n"
 "csv inspect                  dump csv file, prefix each field with its column name\n"
 "csv rows <min>-<max>         dump selected row range from file\n"
@@ -2019,6 +2077,23 @@ int main ( int argc, char * argv[] )
 		{
 			for ( int i = optind ; i < argc ; ++i )
 				colspec = csv.select( colspec, argv[ i ], (i == optind) );
+		}
+	}
+	else if ( mode == "deselect" || mode == "d" )
+	{
+		if ( optind >= argc )
+		{
+			std::cerr << "No columns specified" << std::endl << usage << std::endl;
+			return EXIT_FAILURE;
+		}
+		std::string colspec = argv[ optind++ ];
+
+		if ( optind >= argc )
+			csv.deselect( colspec, NULL );
+		else
+		{
+			for ( int i = optind ; i < argc ; ++i )
+				csv.deselect( colspec, argv[ i ] );
 		}
 	}
 	else if ( mode == "rename" )

@@ -821,38 +821,58 @@ private:
 	}
 
 	// parse an unsigned long long
-	// return -1 on invalid character
+	// return 0 on invalid character
 	// handle 0x prefix
-	unsigned long long str_ull( const std::string &str ) const
+	int str_ull( const std::string &str, unsigned long long *ret ) const
 	{
-		unsigned long long ret = 0;
+		*ret = 0;
 
 		if ( str.size() > 2 && str[0] == '0' && str[1] == 'x' )
 		{
 			for ( unsigned i = 2 ; i < str.size() ; ++i )
 			{
-				if ( str[i] >= '0' && str[i] <= '9' )
-					ret = ret * 16 + (str[i] - '0');
+				if ( (*ret >> 60) > 0 )
+					return 0;
+				else if ( str[i] >= '0' && str[i] <= '9' )
+					*ret = *ret * 16 + (str[i] - '0');
 				else if ( str[i] >= 'A' && str[i] <= 'F' )
-					ret = ret * 16 + (str[i] - 'A' + 10);
+					*ret = *ret * 16 + (str[i] - 'A' + 10);
 				else if ( str[i] >= 'a' && str[i] <= 'f' )
-					ret = ret * 16 + (str[i] - 'a' + 10);
+					*ret = *ret * 16 + (str[i] - 'a' + 10);
 				else
-					return -1;
+					return 0;
 			}
 		}
 		else
 		{
 			for ( unsigned i = 0 ; i < str.size() ; ++i )
 			{
-				if ( str[i] >= '0' && str[i] <= '9' )
-					ret = ret * 10 + (str[i] - '0');
+				if ( (*ret >> 60) > 0 )
+					return 0;
+				else if ( str[i] >= '0' && str[i] <= '9' )
+					*ret = *ret * 10 + (str[i] - '0');
 				else
-					return -1;
+					return 0;
 			}
 		}
 
-		return ret;
+		return 1;
+	}
+
+	int str_ul( const std::string &str, unsigned long *ret ) const
+	{
+		unsigned long long ull;
+		*ret = 0;
+
+		if ( ! str_ull( str, &ull ) )
+			return 0;
+
+		if ( (ull >> 32) > 0 )
+			return 0;
+
+		*ret = (unsigned long)ull;
+
+		return 1;
 	}
 
 	// return the index of the string str in the string vector headers (case insensitive)
@@ -868,7 +888,9 @@ private:
 				if ( ! strcasecmp( str.c_str(), (*headers)[ i ].c_str() ) )
 					return i;
 
-		unsigned ret = str_ull( str );
+		unsigned long ret;
+		if ( ! str_ul( str, &ret ) )
+			return -1;
 
 		if ( ret < max_index )
 			return ret;
@@ -976,7 +998,7 @@ private:
 								if ( headers && (unsigned)range_idx < headers->size() )
 									out_colspec.append( (*headers)[ range_idx ] );
 								else
-									out_colspec.append( ultostring( range_idx ) );
+									out_colspec.append( ull_str( range_idx ) );
 							}
 						}
 
@@ -1071,7 +1093,7 @@ private:
 		}
 	}
 
-	std::string ultostring ( const unsigned long nr, const char *fmt = "%lu" )
+	std::string ull_str ( const unsigned long long nr, const char *fmt = "%llu" )
 	{
 		char buf[16];
 		unsigned buf_sz = snprintf( buf, sizeof(buf), fmt, nr );
@@ -1246,7 +1268,7 @@ public:
 		{
 			for ( unsigned i = 0 ; i < max_index ; ++i )
 			{
-				outbuf->append( ultostring( i ) );
+				outbuf->append( ull_str( i ) );
 				outbuf->append_nl();
 			}
 		}
@@ -1588,7 +1610,7 @@ public:
 		unsigned long lineno = 0;
 		do
 		{
-			outbuf->append( ultostring( lineno++, "%03lu:" ) );
+			outbuf->append( ull_str( lineno++, "%03lu:" ) );
 
 			// parse input row
 			char *fld = NULL;
@@ -1601,7 +1623,7 @@ public:
 					headers = new std::vector<std::string>;
 
 				if ( colnum >= headers->size() )
-					headers->push_back( ultostring( colnum ) );
+					headers->push_back( ull_str( colnum ) );
 
 				if ( colnum > 0 )
 					outbuf->append( sep_out );
@@ -1626,25 +1648,6 @@ public:
 		if ( reader->eos() )
 			return;
 
-		// parse rowspec
-		unsigned long lineno_min = 1;	// included
-		unsigned long lineno_max = 0;	// included
-		size_t idx;
-		if ( (idx = rowspec.find( '-' )) != std::string::npos )
-		{
-			// idx = 0 works too
-			lineno_min = str_ull( rowspec.substr( 0, idx ) );
-			if ( idx == rowspec.size() - 1 )
-				lineno_max = -1;
-			else
-				lineno_max = str_ull( rowspec.substr( idx+1 ) );
-		}
-		else
-		{
-			lineno_min = lineno_max = str_ull( rowspec );
-
-		}
-
 		if ( headers )
 		{
 			for ( unsigned i = 0 ; i < headers->size() ; ++i )
@@ -1658,13 +1661,34 @@ public:
 			outbuf->append_nl();
 		}
 
-		unsigned long lineno = 0;
+		// parse rowspec
+		unsigned long lineno_min = 1;	// included
+		unsigned long lineno_max = 0;	// included
+		size_t idx;
+		if ( (idx = rowspec.find( '-' )) != std::string::npos )
+		{
+			// idx = 0 works too
+			if ( ! str_ul( rowspec.substr( 0, idx ), &lineno_min ) )
+				return;
+			if ( idx == rowspec.size() - 1 )
+				lineno_max = -1;
+			else if ( ! str_ul( rowspec.substr( idx+1 ), &lineno_max ) )
+				return;
+		}
+		else
+		{
+			if ( ! str_ul( rowspec, &lineno_min ) )
+				return;
+			lineno_max = lineno_min;
+		}
+
+		if ( lineno_min > lineno_max )
+			return;
 
 		if ( reader->eos() )
 			return;
 
-		if ( lineno_min > lineno_max )
-			return;
+		unsigned long lineno = 0;
 
 		do
 		{
@@ -1726,7 +1750,7 @@ public:
 				if ( j < vals.size() )
 					outbuf->append( vals[ j ] );
 				else
-					outbuf->append( ultostring( j ) );
+					outbuf->append( ull_str( j ) );
 			}
 			else if ( headers && (unsigned)i < headers->size() )
 			{
@@ -1736,7 +1760,7 @@ public:
 			else
 			{
 				// create new header, use the column number
-				outbuf->append( ultostring( i ) );
+				outbuf->append( ull_str( i ) );
 			}
 		}
 		outbuf->append_nl();

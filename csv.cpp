@@ -1163,7 +1163,10 @@ public:
 				{
 					std::string *str = reader->unescape_csv_field( &ptr, &len );
 					if ( str )
+					{
 						outbuf->append( str );
+						delete str;
+					}
 					else
 						outbuf->append( ptr, len );
 				}

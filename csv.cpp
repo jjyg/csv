@@ -10,7 +10,7 @@
 #include <regex.h>
 #include <tr1/unordered_set>
 
-#define CSV_TOOL_VERSION "20131206"
+#define CSV_TOOL_VERSION "20140114"
 
 // wraps an istream, provide an efficient interface to read lines
 // skips UTF-8 BOM
@@ -820,6 +820,41 @@ private:
 		reader->reset_cur_field_offset();
 	}
 
+	// parse an unsigned long long
+	// return -1 on invalid character
+	// handle 0x prefix
+	unsigned long long str_ull( const std::string &str ) const
+	{
+		unsigned long long ret = 0;
+
+		if ( str.size() > 2 && str[0] == '0' && str[1] == 'x' )
+		{
+			for ( unsigned i = 2 ; i < str.size() ; ++i )
+			{
+				if ( str[i] >= '0' && str[i] <= '9' )
+					ret = ret * 16 + (str[i] - '0');
+				else if ( str[i] >= 'A' && str[i] <= 'F' )
+					ret = ret * 16 + (str[i] - 'A' + 10);
+				else if ( str[i] >= 'a' && str[i] <= 'f' )
+					ret = ret * 16 + (str[i] - 'a' + 10);
+				else
+					return -1;
+			}
+		}
+		else
+		{
+			for ( unsigned i = 0 ; i < str.size() ; ++i )
+			{
+				if ( str[i] >= '0' && str[i] <= '9' )
+					ret = ret * 10 + (str[i] - '0');
+				else
+					return -1;
+			}
+		}
+
+		return ret;
+	}
+
 	// return the index of the string str in the string vector headers (case insensitive)
 	// checks for numeric indexes if not found (decimal, [0-9]+), < max_index
 	// return -1 if not found
@@ -833,15 +868,7 @@ private:
 				if ( ! strcasecmp( str.c_str(), (*headers)[ i ].c_str() ) )
 					return i;
 
-		unsigned ret = 0;
-
-		for ( unsigned i = 0 ; i < str.size() ; ++i )
-		{
-			if ( str[i] < '0' || str[i] > '9' )
-				return -1;
-
-			ret = ret * 10 + (str[i] - '0');
-		}
+		unsigned ret = str_ull( str );
 
 		if ( ret < max_index )
 			return ret;
@@ -1589,6 +1616,83 @@ public:
 		} while ( reader->fetch_line() );
 	}
 
+	// dump a range of csv rows
+	// range is [row_start]-[row_end] (included, first row = 0)
+	void rows ( const std::string &rowspec, const char *filename )
+	{
+		if ( ! start_reader( "", filename ) )
+			return;
+
+		if ( reader->eos() )
+			return;
+
+		// parse rowspec
+		unsigned long lineno_min = 1;	// included
+		unsigned long lineno_max = 0;	// included
+		size_t idx;
+		if ( (idx = rowspec.find( '-' )) != std::string::npos )
+		{
+			// idx = 0 works too
+			lineno_min = str_ull( rowspec.substr( 0, idx ) );
+			if ( idx == rowspec.size() - 1 )
+				lineno_max = -1;
+			else
+				lineno_max = str_ull( rowspec.substr( idx+1 ) );
+		}
+		else
+		{
+			lineno_min = lineno_max = str_ull( rowspec );
+
+		}
+
+		if ( headers )
+		{
+			for ( unsigned i = 0 ; i < headers->size() ; ++i )
+			{
+				outbuf->append( reader->escape_csv_field( (*headers)[i] ) );
+
+				if ( i + 1 < headers->size() )
+					outbuf->append( sep_out );
+			}
+
+			outbuf->append_nl();
+		}
+
+		unsigned long lineno = 0;
+
+		if ( reader->eos() )
+			return;
+
+		if ( lineno_min > lineno_max )
+			return;
+
+		do
+		{
+			char *fld = NULL;
+			unsigned fld_len = 0;
+			unsigned colnum = 0;
+
+			while ( reader->read_csv_field( &fld, &fld_len ) )
+			{
+				if ( lineno >= lineno_min )
+				{
+					if ( colnum++ > 0 )
+						outbuf->append( sep_out );
+					outbuf->append( fld, fld_len );
+				}
+			}
+
+			if ( lineno >= lineno_min )
+				outbuf->append_nl();
+
+			++lineno;
+
+			if ( lineno > lineno_max )
+				break;
+
+		} while ( reader->fetch_line() );
+	}
+
 	// rename columns, always output a headerline, even with -H
 	void rename ( const std::string &colval, const char *filename )
 	{
@@ -1675,6 +1779,7 @@ static const char *usage =
 "csv select <col1>,<col2>,..  create a new csv with a subset/reordered columns\n"
 "csv listcol                  list csv column names, one per line\n"
 "csv inspect                  dump csv file, prefix each field with its column name\n"
+"csv rows <min>-<max>         dump selected row range from file\n"
 ;
 
 static const char *version_info =
@@ -1818,7 +1923,7 @@ int main ( int argc, char * argv[] )
 				colspec = csv.select( colspec, argv[ i ], (i == optind) );
 		}
 	}
-	else if ( mode == "rename" || mode == "r" )
+	else if ( mode == "rename" )
 	{
 		if ( optind >= argc )
 		{
@@ -1905,6 +2010,23 @@ int main ( int argc, char * argv[] )
 		{
 			for ( int i = optind ; i < argc ; ++i )
 				csv.inspect( argv[ i ] );
+		}
+	}
+	else if ( mode == "rows" || mode == "row" || mode == "r" )
+	{
+		if ( optind >= argc )
+		{
+			std::cerr << "No rowspec specified" << std::endl << usage << std::endl;
+			return EXIT_FAILURE;
+		}
+		std::string rowspec = argv[ optind++ ];
+
+		if ( optind >= argc )
+			csv.rows( rowspec, NULL );
+		else
+		{
+			for ( int i = optind ; i < argc ; ++i )
+				csv.rows( rowspec, argv[ i ] );
 		}
 	}
 	else

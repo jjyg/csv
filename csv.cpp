@@ -39,7 +39,7 @@ private:
 	// return the offset after the last valid character converted
 	unsigned filter_input ( unsigned off_start, unsigned off_end )
 	{
-		if ( (input_filter & INPUT_FILTER_UTF16BE) || (input_filter & INPUT_FILTER_UTF16LE) )
+		if ( input_filter & (INPUT_FILTER_UTF16BE | INPUT_FILTER_UTF16LE) )
 		{
 			unsigned off_in = off_start;
 			unsigned off_out = off_start;
@@ -85,7 +85,7 @@ private:
 		{
 			unsigned toread = buf_size - buf_end;
 			unsigned old_end = buf_end;
-			if ( (input_filter & INPUT_FILTER_UTF16BE) || (input_filter & INPUT_FILTER_UTF16LE) )
+			if ( input_filter & (INPUT_FILTER_UTF16BE | INPUT_FILTER_UTF16LE) )
 				toread -= toread & 1;
 
 			if ( toread == 0 )

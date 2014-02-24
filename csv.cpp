@@ -10,7 +10,7 @@
 #include <regex.h>
 #include <tr1/unordered_set>
 
-#define CSV_TOOL_VERSION "20140114"
+#define CSV_TOOL_VERSION "20140224"
 
 // wraps an istream, provide an efficient interface to read lines
 // skips UTF-8 BOM
@@ -248,7 +248,7 @@ public:
 		*line_start = NULL;
 		*line_length = 0;
 
-		std::string sample( buf, 64 );
+		std::string sample( buf, (buf_end > 64 ? 64 : buf_end) );
 		std::cerr << "Line too long, near '" << sample << "'" << std::endl;
 
 		// slide buffer anyway, to avoid infinite loop in badly written clients
@@ -767,6 +767,7 @@ private:
 	char sep;
 	char sep_out;
 	char quot;
+	unsigned line_max;
 	unsigned csv_flags;
 
 #define HAS_FLAG(f) ( csv_flags & ( 1 << f ) )
@@ -1027,7 +1028,7 @@ private:
 	{
 		cleanup();
 
-		reader = new csv_reader( filename, sep, quot );
+		reader = new csv_reader( filename, sep, quot, line_max );
 
 		if ( reader->failed_to_open() )
 		{
@@ -1115,10 +1116,11 @@ private:
 	}
 
 public:
-	explicit csv_tool ( output_buffer *outbuf, char sep = ',', char sep_out = ',', char quot = '"', unsigned csv_flags = 0 ) :
+	explicit csv_tool ( output_buffer *outbuf, char sep = ',', char sep_out = ',', char quot = '"', unsigned line_max = 64*1024, unsigned csv_flags = 0 ) :
 		sep(sep),
 		sep_out(sep_out),
 		quot(quot),
+		line_max(line_max),
 		csv_flags(csv_flags),
 		outbuf(outbuf),
 		reader(NULL),
@@ -1916,6 +1918,7 @@ static const char *usage =
 "          -s <separator>     csv field separator (default=',')\n"
 "          -S <separator>     output csv field separator (default=sep) - do not use -s after this option ; ignored in rename\n"
 "          -q <quote>         csv quote character (default='\"')\n"
+"          -L <max line len>  specify maximum line length allowed (default=64k)\n"
 "          -H                 csv files have no header line\n"
 "                             columns are specified as number (first col is 0)\n"
 "          -i                 case insensitive regex (grep mode)\n"
@@ -1923,7 +1926,7 @@ static const char *usage =
 "          -u                 unique columns: do not include cols specified in colspec when expanding ranges\n"
 "                             useful to move cols, eg select -u col3,-,col1\n"
 "\n"
-"csv addcol <col1>=<val1>,..  prepend an column to the csv with fixed value\n"
+"csv addcol <col1>=<val1>,..  prepend a column to the csv with fixed value\n"
 "csv extract <column>         extract one column data\n"
 "csv grepcol <col1>=<val1>,.. create a csv with only the lines where colX has value X (regexp)\n"
 "                             with multiple colval, show line if any one match (c1=~v1 OR c2=~v2)\n"
@@ -1974,9 +1977,10 @@ int main ( int argc, char * argv[] )
 	char sep = ',';
 	char sep_out = ',';
 	char quot = '"';
+	unsigned line_max = 64*1024;
 	unsigned csv_flags = 0;
 
-	while ( (opt = getopt(argc, argv, "hVo:s:S:q:Hivu")) != -1 )
+	while ( (opt = getopt(argc, argv, "hVo:s:S:q:L:Hivu")) != -1 )
 	{
 		switch (opt)
 		{
@@ -2011,6 +2015,10 @@ int main ( int argc, char * argv[] )
 				quot = escape_char( optarg[ 1 ] );
 			break;
 
+		case 'L':
+			line_max = strtoul( optarg, NULL, 0 );
+			break;
+
 		case 'H':
 			csv_flags |= 1 << NO_HEADERLINE;
 			break;
@@ -2043,7 +2051,7 @@ int main ( int argc, char * argv[] )
 	if ( outbuf.failed_to_open() )
 		return EXIT_FAILURE;
 
-	csv_tool csv( &outbuf, sep, sep_out, quot, csv_flags );
+	csv_tool csv( &outbuf, sep, sep_out, quot, line_max, csv_flags );
 
 	std::string mode = argv[optind++];
 

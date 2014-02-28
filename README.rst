@@ -7,6 +7,7 @@ The general mode of operation is:
   ./csv [options] <mode> <mode parameters> [input file1 [input file 2 ...]]
 
 Mode parameters usually involve column descriptors ; those can be words (as taken from the 1st "header" row of the file) or integers (1st column = 0).
+Column names are case-insensitive.
 
 With no input file, data is read from stdin.
 

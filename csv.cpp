@@ -10,7 +10,7 @@
 #include <regex.h>
 #include <tr1/unordered_set>
 
-#define CSV_TOOL_VERSION "20140224"
+#define CSV_TOOL_VERSION "20140305"
 
 // wraps an istream, provide an efficient interface to read lines
 // skips UTF-8 BOM
@@ -1480,7 +1480,8 @@ public:
 				{
 					std::string str;
 					char *ptr = line + f_off;
-					reader->unescape_csv_field( &ptr, &f_len, &str );
+					unsigned len = f_len;
+					reader->unescape_csv_field( &ptr, &len, &str );
 
 					for ( unsigned i = 0 ; i < inv_indexes[ idx_in ].size() ; ++i )
 					{
@@ -1611,7 +1612,8 @@ public:
 				{
 					std::string str;
 					char *ptr = line + f_off;
-					reader->unescape_csv_field( &ptr, &f_len, &str );
+					unsigned len = f_len;
+					reader->unescape_csv_field( &ptr, &len, &str );
 
 					for ( unsigned i = 0 ; i < inv_indexes[ idx_in ].size() ; ++i )
 					{

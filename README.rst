@@ -136,6 +136,7 @@ Unquoted values are unchanged, quoted values are shown with the quotes unescaped
 
   csv extract row4
 
+With the special option -0, a NUL byte is appended to each field (beware, a field may already contain NUL bytes).
 
 listcol (l)
 -----------
@@ -188,6 +189,8 @@ Limitations
 ===========
 
 The program does not validate the CSV format of the input files, so that an unquoted field with a quote in the middle does not yield errors. This is a feature.
+
+Only the quote, coma and newline characters are used during parsing, all other characters are passed as-is. This includes NUL bytes.
 
 Most modes of operation do not handle well multiple input files with varied column ordering. One exception is the 'select' mode, that will reorder subsequent inputs to match the 1st file columns.
 

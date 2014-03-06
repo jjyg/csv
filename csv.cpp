@@ -10,7 +10,7 @@
 #include <regex.h>
 #include <tr1/unordered_set>
 
-#define CSV_TOOL_VERSION "20140305"
+#define CSV_TOOL_VERSION "20140306"
 
 // wraps an istream, provide an efficient interface to read lines
 // skips UTF-8 BOM
@@ -758,7 +758,8 @@ enum {
 	NO_HEADERLINE,
 	RE_NOCASE,
 	RE_INVERT,
-	UNIQ_COLS
+	UNIQ_COLS,
+	EXTRACT_ZERO,
 };
 
 class csv_tool
@@ -1153,6 +1154,10 @@ public:
 		if ( reader->eos() )
 			return;
 
+		int zero = 0;
+		if ( HAS_FLAG( EXTRACT_ZERO ) )
+			zero = 1;	// lol!
+
 		do
 		{
 			char *ptr = NULL;
@@ -1176,7 +1181,10 @@ public:
 				// cannot break: a later field may include a newline
 				++idx_in;
 			}
-			outbuf->append_nl();
+			if ( zero )
+				outbuf->append( '\0' );
+			else
+				outbuf->append_nl();
 
 		} while ( reader->fetch_line() );
 	}
@@ -1927,6 +1935,7 @@ static const char *usage =
 "          -v                 invert regex: show non-matching lines (grep mode)\n"
 "          -u                 unique columns: do not include cols specified in colspec when expanding ranges\n"
 "                             useful to move cols, eg select -u col3,-,col1\n"
+"          -0                 in extract mode, end records with a nul byte\n"
 "\n"
 "csv addcol <col1>=<val1>,..  prepend a column to the csv with fixed value\n"
 "csv extract <column>         extract one column data\n"
@@ -1982,7 +1991,7 @@ int main ( int argc, char * argv[] )
 	unsigned line_max = 64*1024;
 	unsigned csv_flags = 0;
 
-	while ( (opt = getopt(argc, argv, "hVo:s:S:q:L:Hivu")) != -1 )
+	while ( (opt = getopt(argc, argv, "hVo:s:S:q:L:Hivu0")) != -1 )
 	{
 		switch (opt)
 		{
@@ -2035,6 +2044,10 @@ int main ( int argc, char * argv[] )
 
 		case 'u':
 			csv_flags |= 1 << UNIQ_COLS;
+			break;
+
+		case '0':
+			csv_flags |= 1 << EXTRACT_ZERO;
 			break;
 
 		default:

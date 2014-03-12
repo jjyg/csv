@@ -165,6 +165,12 @@ The range is inclusive.
   csv r 8-
 
 
+stripheader
+-----------
+
+Dump the CSV file without its header line. Shortcut for csv -H rows 1-
+
+
 decimal (dec)
 -------------
 

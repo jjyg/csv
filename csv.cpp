@@ -10,7 +10,7 @@
 #include <regex.h>
 #include <tr1/unordered_set>
 
-#define CSV_TOOL_VERSION "20140306"
+#define CSV_TOOL_VERSION "20140312"
 
 // wraps an istream, provide an efficient interface to read lines
 // skips UTF-8 BOM
@@ -769,7 +769,9 @@ private:
 	char sep_out;
 	char quot;
 	unsigned line_max;
+public:
 	unsigned csv_flags;
+private:
 
 #define HAS_FLAG(f) ( csv_flags & ( 1 << f ) )
 
@@ -1949,6 +1951,7 @@ static const char *usage =
 "csv listcol                  list csv column names, one per line\n"
 "csv inspect                  dump csv file, prefix each field with its column name\n"
 "csv rows <min>-<max>         dump selected row range from file\n"
+"csv stripheader              dump the csv files omitting the header line\n"
 "csv decimal <cols>           convert selected columns to decimal int64 representation\n"
 ;
 
@@ -2223,6 +2226,18 @@ int main ( int argc, char * argv[] )
 		{
 			for ( int i = optind ; i < argc ; ++i )
 				csv.rows( rowspec, argv[ i ] );
+		}
+	}
+	else if ( mode == "stripheader" || mode == "stripheaders" )
+	{
+		csv.csv_flags |= 1 << NO_HEADERLINE;
+
+		if ( optind >= argc )
+			csv.rows( "1-", NULL );
+		else
+		{
+			for ( int i = optind ; i < argc ; ++i )
+				csv.rows( "1-", argv[ i ] );
 		}
 	}
 	else if ( mode == "decimal" || mode == "dec" )

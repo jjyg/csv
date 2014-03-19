@@ -325,6 +325,14 @@ public:
 			return true;
 		}
 
+		// slide existing buffer, read more from input, and retry
+		if ( buf_cur > 0 )
+		{
+			refill_buffer();
+
+			return read_line( line_start, line_length );
+		}
+
 		// end of file ?
 		if ( !input->good() )
 		{
@@ -343,14 +351,6 @@ public:
 
 				return false;
 			}
-		}
-
-		// slide existing buffer, read more from input, and retry
-		if ( buf_cur > 0 )
-		{
-			refill_buffer();
-
-			return read_line( line_start, line_length );
 		}
 
 		// no newline in whole buffer

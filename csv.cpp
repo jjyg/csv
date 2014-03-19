@@ -9,12 +9,16 @@
 #include <errno.h>
 #include <regex.h>
 #include <tr1/unordered_set>
+#ifndef NO_ZLIB
+#include <zlib.h>
+#endif
 
-#define CSV_TOOL_VERSION "20140312"
+#define CSV_TOOL_VERSION "20140319"
 
 // wraps an istream, provide an efficient interface to read lines
 // skips UTF-8 BOM
 // interprets UTF-16 BOMs, return iso codepoints - out of range characters are converted to '?'
+// handles gzip compressed inputs
 class line_reader
 {
 private:
@@ -27,6 +31,14 @@ private:
 	unsigned buf_end;
 	unsigned buf_size;
 	char *buf;
+
+#ifndef NO_ZLIB
+	unsigned zbuf_cur;
+	unsigned zbuf_end;
+	unsigned zbuf_size;
+	char *zbuf;
+	z_stream zstream;
+#endif
 
 	// bitmask
 	enum {
@@ -91,6 +103,58 @@ private:
 			if ( toread == 0 )
 				return;
 
+#ifndef NO_ZLIB
+			if (zbuf) {
+				// shift & refill compressed data if available
+				if ( zbuf_cur > zbuf_size / 2 )
+				{
+					if ( zbuf_end < zbuf_cur )
+						zbuf_end = zbuf_cur;
+					memmove( zbuf, zbuf + zbuf_cur, zbuf_end - zbuf_cur );
+					zbuf_end -= zbuf_cur;
+					zbuf_cur = 0;
+				}
+
+				if ( zbuf_size > zbuf_end )
+				{
+					input->read( zbuf + zbuf_end, zbuf_size - zbuf_end);
+					zbuf_end += input->gcount();
+				}
+
+				// decompress into buf
+				int ret;
+				zstream.next_out = (Bytef *)buf + buf_end;
+				zstream.avail_out = toread;
+				zstream.next_in = (Bytef *)zbuf + zbuf_cur;
+				zstream.avail_in = zbuf_end - zbuf_cur;
+				ret = inflate( &zstream, Z_NO_FLUSH );
+				if ( ret == Z_OK || ret == Z_STREAM_END )
+				{
+					zbuf_cur = (char *)zstream.next_in - zbuf;
+					buf_end = (char *)zstream.next_out - buf;
+				}
+
+				if ( ret != Z_OK )
+				{
+					if ( ret == Z_STREAM_END )
+					{
+						if ( zbuf_cur != zbuf_end )
+							std::cerr << "inflate: trailing data (" << (zbuf_end - zbuf_cur) << " bytes)" << std::endl;
+					} else
+						std::cerr << "inflate: " << zstream.msg << std::endl;
+
+					inflateEnd( &zstream );
+					delete[] zbuf;
+					zbuf = NULL;
+				}
+
+				if ( input_filter )
+					buf_end = filter_input( old_end, buf_end );
+
+				return;
+			}
+#endif
+
 			input->read( buf + buf_end, toread );
 			buf_end += input->gcount();
 			if (buf_end > buf_size)
@@ -100,6 +164,39 @@ private:
 				buf_end = filter_input( old_end, buf_end );
 		}
 	}
+
+#ifndef NO_ZLIB
+	void init_zstream(void)
+	{
+		zbuf = buf;
+		zbuf_cur = buf_cur;
+		zbuf_end = buf_end;
+		zbuf_size = buf_size;
+
+		buf = new char[buf_size];
+		buf_cur = buf_end = 0;
+
+		int ret;
+		zstream.zalloc = Z_NULL;
+		zstream.zfree = Z_NULL;
+		zstream.opaque = Z_NULL;
+		zstream.avail_in = zbuf_end - zbuf_cur;
+		zstream.next_in = (Bytef *)zbuf + zbuf_cur;
+
+		ret = inflateInit2( &zstream, 32|15 );
+
+		if (ret != Z_OK)
+		{
+			std::cerr << "inflateInit: " << zstream.msg << std::endl;
+			badfile = true;
+			return;
+		}
+
+		zbuf_cur = (char *)zstream.next_in - zbuf;
+
+		refill_buffer();
+	}
+#endif
 
 public:
 	bool failed_to_open ( ) const
@@ -159,6 +256,14 @@ public:
 		input->read( buf, (buf_size > 4096 ? buf_size/16 : buf_size) );
 		buf_end = input->gcount();
 
+#ifndef NO_ZLIB
+		zbuf = NULL;
+
+		if ( buf_end >= 2 && buf[0] == 0x1f && buf[1] == (char)0x8b )
+			// zlib header
+			init_zstream();
+#endif
+
 		if ( buf_end >= 3 && buf[0] == '\xef' && buf[1] == '\xbb' && buf[2] == '\xbf' )
 		{
 			// discard utf-8 BOM
@@ -183,9 +288,13 @@ public:
 	~line_reader ( )
 	{
 		if ( should_delete_input )
-		       delete input;
+			delete input;
 
 		delete[] buf;
+#ifndef NO_ZLIB
+		if ( zbuf )
+			delete[] zbuf;
+#endif
 	}
 
 	// read one line from input, starting at buf_cur
@@ -480,7 +589,7 @@ public:
 		{
 			cur_field_offset = 0;
 			trim_newlines();
-			
+
 			return true;
 		}
 

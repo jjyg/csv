@@ -190,6 +190,8 @@ The program interprets some special UTF BOM markers at the beginning of streams:
 The UTF8 BOM is discarded, and when encountering the UTF16 markers, the stream read from this point is transcoded to ASCII-8BIT (0-255). Out of range characters are converted to '?'.
 The body of the file is treated as an array of bytes.
 
+The program recognizes the gzip magic (0x1f 0x8b) and handles compressed files accordingly. Compile with -DNO_ZLIB to disable this support.
+
 
 Limitations
 ===========

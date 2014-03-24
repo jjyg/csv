@@ -58,6 +58,8 @@ public:
 	// on return, if unescaped is not NULL, field_start and field_length are undefined.
 	std::string* unescape_csv_field ( char* *field_start, unsigned *field_length, std::string* unescaped = NULL ) const;
 
+	static std::string escape_csv_string ( const std::string &str, const char quot = '"' );
+
 	// return the escaped version of an unescaped string
 	std::string escape_csv_field ( const std::string &str ) const;
 

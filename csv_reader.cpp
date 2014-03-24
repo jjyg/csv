@@ -665,7 +665,7 @@ std::string* csv_reader::unescape_csv_field ( char* *field_start, unsigned *fiel
 }
 
 // return the escaped version of an unescaped string
-std::string csv_reader::escape_csv_field ( const std::string &str ) const
+std::string csv_reader::escape_csv_string ( const std::string &str, const char quot )
 {
 	std::string ret;
 
@@ -689,6 +689,11 @@ std::string csv_reader::escape_csv_field ( const std::string &str ) const
 	ret.push_back( quot );
 
 	return ret;
+}
+
+std::string csv_reader::escape_csv_field ( const std::string &str ) const
+{
+	return csv_reader::escape_csv_string( str, quot );
 }
 
 // parse the current csv line (after a call to fetch_line())

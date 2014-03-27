@@ -85,13 +85,19 @@ static void top20_aggreg( u_data *ptr, const std::string *field, int first )
 	ptr->vec_str->push_back( *field );
 }
 
-static void top20_merge( u_data *dst, u_data *src )
+static void top20_merge( u_data *ptr, const std::string *field, int first )
 {
-	while ( dst->vec_str->size() < 20 && src->vec_str->size() > 0 )
+	size_t last = 0, next = field->find( ',' );
+	while ( next != std::string::npos )
 	{
-		top20_aggreg( dst, &src->vec_str->back(), 0 );
-		src->vec_str->pop_back();
+		const std::string &tmp = field->substr( last, next-last );
+		top20_aggreg( ptr, &tmp, first );
+		last = next + 1;
+		next = field->find( ',', last );
 	}
+
+	const std::string &tmp = field->substr( last );
+	top20_aggreg( ptr, &tmp, first );
 }
 
 static void top_out( std::string &str, u_data *ptr )
@@ -115,23 +121,11 @@ static void min_aggreg( u_data *ptr, const std::string *field, int first )
 		ptr->ll = val;
 }
 
-static void min_merge( u_data *dst, u_data *src )
-{
-	if ( src->ll < dst->ll )
-		dst->ll = src->ll;
-}
-
 static void max_aggreg( u_data *ptr, const std::string *field, int first )
 {
 	long long val = strtoll( field->c_str(), 0, 0 );
 	if ( first || val > ptr->ll )
 		ptr->ll = val;
-}
-
-static void max_merge( u_data *dst, u_data *src )
-{
-	if ( src->ll > dst->ll )
-		dst->ll = src->ll;
 }
 
 static void minstr_aggreg( u_data *ptr, const std::string *field, int first )
@@ -140,22 +134,10 @@ static void minstr_aggreg( u_data *ptr, const std::string *field, int first )
 		*ptr->str = *field;
 }
 
-static void minstr_merge( u_data *dst, u_data *src )
-{
-	if ( *src->str < *dst->str )
-		*dst->str = *src->str;
-}
-
 static void maxstr_aggreg( u_data *ptr, const std::string *field, int first )
 {
 	if ( first || *field > *ptr->str )
 		*ptr->str = *field;
-}
-
-static void maxstr_merge( u_data *dst, u_data *src )
-{
-	if ( *src->str > *dst->str )
-		*dst->str = *src->str;
 }
 
 static void count_aggreg( u_data *ptr, const std::string *field, int first )
@@ -167,9 +149,11 @@ static void count_aggreg( u_data *ptr, const std::string *field, int first )
 		++(ptr->ll);
 }
 
-static void count_merge( u_data *dst, u_data *src )
+static void count_merge( u_data *ptr, const std::string *field, int first )
 {
-	dst->ll += src->ll;
+	if ( first )
+		ptr->ll = 0;
+	ptr->ll += strtoll( field->c_str(), 0, 0 );
 }
 
 static void int_out( std::string &str, u_data *ptr )
@@ -195,8 +179,8 @@ struct aggreg_descriptor {
 	void (*free)( u_data *ptr );
 	// called during aggregation, ptr is the same as for alloc(), field is the unescaped csv field value, first = 1 if field is the 1st entry to be aggregated here
 	void (*aggreg)( u_data *ptr, const std::string *field, int first );
-	// called during merge, dst / src is the same as alloc(), should update dst to be the global aggregate over src + dst
-	void (*merge)( u_data *ptr_dst, u_data *ptr_src );
+	// called during merge, similar to aggreg, but field points to the result of a previous out(aggreg())
+	void (*merge)( u_data *ptr, const std::string *field, int first );
 	// determine aggregation key, should append data to key. field is the raw csv field value, it is neither escaped nor unescaped.
 	void (*key)( std::string &key, const std::string &field );
 	// called when dumping aggregation results, ptr is the same as for alloc().
@@ -208,7 +192,7 @@ struct aggreg_descriptor {
 		str_alloc,
 		str_free,
 		str_aggreg,
-		NULL,
+		str_aggreg,
 		str_key,
 		str_out,
 	},
@@ -217,7 +201,7 @@ struct aggreg_descriptor {
 		str_alloc,
 		str_free,
 		str_aggreg,
-		NULL,
+		str_aggreg,
 		downcase_key,
 		str_out,
 	},
@@ -235,7 +219,7 @@ struct aggreg_descriptor {
 		NULL,
 		NULL,
 		min_aggreg,
-		min_merge,
+		min_aggreg,
 		NULL,
 		int_out,
 	},
@@ -244,7 +228,7 @@ struct aggreg_descriptor {
 		NULL,
 		NULL,
 		max_aggreg,
-		max_merge,
+		max_aggreg,
 		NULL,
 		int_out,
 	},
@@ -253,7 +237,7 @@ struct aggreg_descriptor {
 		str_alloc,
 		str_free,
 		minstr_aggreg,
-		minstr_merge,
+		minstr_aggreg,
 		NULL,
 		str_out,
 	},
@@ -262,7 +246,7 @@ struct aggreg_descriptor {
 		str_alloc,
 		str_free,
 		maxstr_aggreg,
-		maxstr_merge,
+		maxstr_aggreg,
 		NULL,
 		str_out,
 	},

@@ -1,13 +1,17 @@
+CC=g++
+CCOPTS=-W -Wall -O2
+LDOPTS=-s -lz
+
 all: csv csv-aggreg
 
 csv: csv_tool.o csv_reader.o output_buffer.o
-	g++ -W -Wall -O2 -s -o $@ $+ -lz
+	$(CC) $(CCOPTS) -o $@ $+ $(LDOPTS)
 
 csv-aggreg: csv_aggreg.o csv_reader.o output_buffer.o
-	g++ -W -Wall -O2 -s -o $@ $+ -lz
+	$(CC) $(CCOPTS) -o $@ $+ $(LDOPTS)
 
 %.o: %.cpp
-	g++ -W -Wall -O2 -o $@ -c $<
+	$(CC) $(CCOPTS) -o $@ -c $<
 
 clean:
 	rm -f *.o

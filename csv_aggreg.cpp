@@ -454,7 +454,7 @@ public:
 		std::string tmp;
 		struct aggreg_col *col = NULL;
 		int parens = 0;
-		unsigned i;
+		size_t i, start_off = 0;
 		char c = 0;
 
 		for ( i = 0 ; i < aggreg_str.size() ; ++i )
@@ -473,11 +473,6 @@ public:
 				if ( parens == 1 )
 				{
 					col = new aggreg_col();
-
-					if ( !outname.size() )
-						outname = tmp;
-					col->outname = outname;
-					outname.clear();
 
 					if ( conf.size() )
 						col->aggreg_idx = conf.back().aggreg_idx + 1;
@@ -503,6 +498,12 @@ public:
 						if ( tmp.size() )
 							col->colname = tmp;
 
+						if ( outname.size() )
+							col->outname = outname;
+						else
+							col->outname = aggreg_str.substr( start_off, i-start_off+1 );
+						outname.clear();
+
 						conf.push_back( *col );
 						col = NULL;
 					}
@@ -518,9 +519,10 @@ public:
 	implicit_str:
 					col = new aggreg_col();
 
-					if ( !outname.size() )
-						outname = tmp;
-					col->outname = outname;
+					if ( outname.size() )
+						col->outname = outname;
+					else
+						col->outname = aggreg_str.substr( start_off, i-start_off );
 					outname.clear();
 
 					if ( conf.size() )
@@ -540,6 +542,8 @@ public:
 
 					tmp.clear();
 				}
+
+				start_off = i + 1;
 			}
 			else if ( c != ' ' )
 				tmp.push_back( c );
@@ -704,6 +708,7 @@ public:
 
 
 	// dump all aggregated data to an output CSV
+	// clears aggreg
 	void dump_output( const char *filename )
 	{
 		output_buffer outbuf( filename );
@@ -729,11 +734,17 @@ public:
 				std::string s;
 				conf[ i ].aggregator->out( s, p + conf[ i ].aggreg_idx );
 				outbuf.append( s );
+
+				if ( conf[ i ].aggregator->free )
+					conf[ i ].aggregator->free( p + conf[ i ].aggreg_idx );
 			}
 			outbuf.append_nl();
+			free( p );
 
 			++it;
 		}
+
+		aggreg.clear();
 	}
 };
 

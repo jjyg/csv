@@ -363,6 +363,49 @@ private:
 		return NULL;
 	}
 
+	// create a csv_reader for merging, ensure columns match
+	csv_reader *start_reader_merge( const char *filename )
+	{
+		std::vector< std::string > *headers = NULL;
+		csv_reader *reader = new csv_reader( filename, ',', '"', line_max );
+
+		if ( reader->failed_to_open() )
+			goto fail;
+
+		if ( !reader->fetch_line() )
+			goto fail;
+
+		headers = reader->parse_line();
+
+		if ( headers->size() != conf.size() )
+		{
+			std::cerr << "Merge: column count differs, skipping file" << std::endl;
+			goto fail;
+		}
+
+		for ( unsigned i = 0 ; i < conf.size() ; ++i )
+			if ( str_downcase( conf[ i ].outname ) != str_downcase( headers->at( i ) ) )
+			{
+				std::cerr << "Merge: columns do not match (" << headers->at( i ) << " != " << conf[ i ].colname << "), skipping file" << std::endl;
+				goto fail;
+			}
+
+		reader->fetch_line();
+
+		if ( reader->eos() )
+			goto fail;
+
+		delete headers;
+
+		return reader;
+
+	fail:
+		if ( headers )
+			delete headers;
+		delete reader;
+		return NULL;
+	}
+
 	// return the pointer for a given key, allocate it if necessary
 	// sets *first = 1 if a new buffer was allocated
 	u_data *aggreg_find_or_create( const std::string key, int *first )
@@ -614,7 +657,49 @@ public:
 	// read already-aggregated data, integrate it into the global aggregated store (ie the reduce in map-reduce)
 	void merge( const char *filename )
 	{
-		(void)filename;
+		csv_reader *reader = start_reader_merge( filename );
+		if ( !reader )
+			return;
+
+		// for each input column, hold either the unescaped field or an empty string (if the column is not needed)
+		std::vector< std::string > elems;
+		elems.resize( conf.size() );
+
+		do
+		{
+			// read fields, build aggregation key
+			char *f = NULL;
+			unsigned f_len = 0;
+			unsigned idx_in = 0;
+			std::string key;
+			while ( reader->read_csv_field( &f, &f_len ) )
+			{
+				if ( idx_in >= conf.size() )
+					continue;
+
+				char *uf = f;
+				unsigned uf_len = f_len;
+				elems[ idx_in ].clear();
+				reader->unescape_csv_field( &uf, &uf_len, &elems[ idx_in ] );
+				if ( conf[ idx_in ].aggregator->key )
+				{
+					conf[ idx_in ].aggregator->key( key, std::string( f, f_len ) );
+					key.push_back( ',' );
+				}
+
+				++idx_in;
+			}
+
+			// aggregate
+			int first = 0;
+			u_data *aggreg_entry = aggreg_find_or_create( key, &first );
+			for ( unsigned i = 0 ; i < conf.size() ; ++i )
+				if ( conf[ i ].aggregator->merge )
+					conf[ i ].aggregator->merge( aggreg_entry + i, &elems[ i ], first );
+
+		} while ( reader->fetch_line() );
+
+		delete reader;
 	}
 
 

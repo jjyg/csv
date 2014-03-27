@@ -439,8 +439,6 @@ public:
 	{
 	}
 
-	//~csv_aggreg () { }
-
 	// parse an aggregation descriptor string into self.conf
 	// ex:
 	//  count()
@@ -505,6 +503,7 @@ public:
 						outname.clear();
 
 						conf.push_back( *col );
+						delete col;
 						col = NULL;
 					}
 
@@ -538,6 +537,7 @@ public:
 					col->colname = tmp;
 
 					conf.push_back( *col );
+					delete col;
 					col = NULL;
 
 					tmp.clear();

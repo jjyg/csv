@@ -10,7 +10,7 @@
 #include "output_buffer.h"
 #include "csv_reader.h"
 
-#define CSV_AGGREG_VERSION "20140327"
+#define CSV_AGGREG_VERSION "20140328"
 
 /*
  * list of aggregator functions
@@ -58,7 +58,7 @@ static void str_out( std::string &str, u_data *ptr )
 
 static void downcase_key( std::string &key, const std::string &field )
 {
-	key = str_downcase( field );
+	key.append( str_downcase( field ) );
 }
 
 static void top_alloc( u_data *ptr )

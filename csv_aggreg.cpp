@@ -3,7 +3,7 @@
 #include <iostream>
 #include <vector>
 #include <regex.h>
-#include <tr1/unordered_map>
+#include <tr1/unordered_set>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -40,25 +40,19 @@ static void str_free( u_data *ptr )
 	delete ptr->str;
 }
 
-static void str_aggreg( u_data *ptr, const std::string *field, int first )
+static std::string str_key( const std::string &field )
 {
-	if ( first )
-		*ptr->str = *field;
+	return std::string( field );
 }
 
-static void str_key( std::string &key, const std::string &field )
+static std::string str_out( u_data *ptr )
 {
-	key.append( field );
+	return csv_reader::escape_csv_string( *ptr->str );
 }
 
-static void str_out( std::string &str, u_data *ptr )
+static std::string downcase_key( const std::string &field )
 {
-	str = csv_reader::escape_csv_string( *ptr->str );
-}
-
-static void downcase_key( std::string &key, const std::string &field )
-{
-	key.append( str_downcase( field ) );
+	return str_downcase( field );
 }
 
 static void top_alloc( u_data *ptr )
@@ -100,7 +94,7 @@ static void top20_merge( u_data *ptr, const std::string *field, int first )
 	top20_aggreg( ptr, &tmp, first );
 }
 
-static void top_out( std::string &str, u_data *ptr )
+static std::string top_out( u_data *ptr )
 {
 	std::string tmp;
 
@@ -111,7 +105,7 @@ static void top_out( std::string &str, u_data *ptr )
 		tmp.append( (*ptr->vec_str)[ i ] );
 	}
 
-	str.append( csv_reader::escape_csv_string( tmp ) );
+	return csv_reader::escape_csv_string( tmp );
 }
 
 static void min_aggreg( u_data *ptr, const std::string *field, int first )
@@ -156,14 +150,13 @@ static void count_merge( u_data *ptr, const std::string *field, int first )
 	ptr->ll += strtoll( field->c_str(), 0, 0 );
 }
 
-static void int_out( std::string &str, u_data *ptr )
+static std::string int_out( u_data *ptr )
 {
 	char buf[16];
 	unsigned buf_sz = snprintf( buf, sizeof(buf), "%lld", ptr->ll );
 	if ( buf_sz > sizeof(buf) )
 		buf_sz = sizeof(buf);
-	std::string tmp( buf, buf_sz );
-	str = tmp;
+	return std::string( buf, buf_sz );
 }
 
 
@@ -182,17 +175,17 @@ struct aggreg_descriptor {
 	// called during merge, similar to aggreg, but field points to the result of a previous out(aggreg())
 	void (*merge)( u_data *ptr, const std::string *field, int first );
 	// determine aggregation key, should append data to key. field is the raw csv field value, it is neither escaped nor unescaped.
-	void (*key)( std::string &key, const std::string &field );
+	std::string (*key)( const std::string &field );
 	// called when dumping aggregation results, ptr is the same as for alloc().
-	void (*out)( std::string &str, u_data *ptr );
+	std::string (*out)( u_data *ptr );
 } aggreg_descriptors[] =
 {
 	{
 		"str",
 		str_alloc,
 		str_free,
-		str_aggreg,
-		str_aggreg,
+		NULL,
+		NULL,
 		str_key,
 		str_out,
 	},
@@ -200,8 +193,8 @@ struct aggreg_descriptor {
 		"downcase",
 		str_alloc,
 		str_free,
-		str_aggreg,
-		str_aggreg,
+		NULL,
+		NULL,
 		downcase_key,
 		str_out,
 	},
@@ -292,12 +285,40 @@ private:
 	std::vector< std::vector< struct aggreg_col * > > inv_conf;
 	// points to aggreg_cols not listed in inv_conf (ie not linked to an input column)
 	std::vector< struct aggreg_col * > inv_conf_other;
+	std::vector< unsigned > conf_keys;
 
-	// aggregated data store:
-	//  key = concatenation of key column values (csv-escaped + ',')
-	//  value = opaque blob, where every aggregator stores its data related to this key at a given offset
-	std::tr1::unordered_map< std::string, u_data * > aggreg;
+	friend struct f_hash;
+	struct f_hash
+	{
+		csv_aggreg *ca;
+		explicit f_hash( csv_aggreg *ca ) : ca(ca) {}
+		size_t operator()( const u_data * ptr ) const
+		{
+			size_t hash = 0;
+			for ( unsigned i = 0 ; i < ca->conf_keys.size() ; ++i )
+				hash ^= std::tr1::hash< std::string >()( *ptr[ ca->conf_keys[ i ] ].str );
+			return hash;
+		}
+	};
 
+	friend struct f_equal;
+	struct f_equal
+	{
+		csv_aggreg *ca;
+		explicit f_equal( csv_aggreg *ca ) : ca(ca) {}
+		bool operator()( const u_data *p1, const u_data *p2 ) const
+		{
+			bool match = true;
+			for ( unsigned i = 0 ; i < ca->conf_keys.size() ; ++i )
+				if ( *p1[ ca->conf_keys[ i ] ].str != *p2[ ca->conf_keys[ i ] ].str )
+					match = false;
+			return match;
+		}
+	};
+
+	// aggregated data store
+	typedef std::tr1::unordered_set< u_data *, f_hash, f_equal> u_data_aggreg;
+	u_data_aggreg aggreg;
 
 	// find an aggregator struct by name (eg "count", "min"...)
 	struct aggreg_descriptor *find_aggregator( const std::string &name )
@@ -409,11 +430,11 @@ private:
 
 	// return the pointer for a given key, allocate it if necessary
 	// sets *first = 1 if a new buffer was allocated
-	u_data *aggreg_find_or_create( const std::string key, int *first )
+	u_data *aggreg_find_or_create( u_data *key, int *first )
 	{
-		std::tr1::unordered_map< std::string, u_data * >::const_iterator it = aggreg.find( key );
+		u_data_aggreg::const_iterator it = aggreg.find( key );
 		if ( it != aggreg.end() )
-			return it->second;
+			return *it;
 
 		*first = 1;
 
@@ -423,12 +444,13 @@ private:
 			throw std::bad_alloc();
 
 		for ( unsigned i = 0 ; i < conf.size() ; ++i )
-		{
 			if ( conf[ i ].aggregator->alloc )
 				conf[ i ].aggregator->alloc( val + conf[ i ].aggreg_idx );
-		}
 
-		aggreg[ key ] = val;
+		for ( unsigned i = 0 ; i < conf_keys.size() ; ++i )
+			*val[ conf_keys[ i ] ].str = *key[ conf_keys[ i ] ].str;
+
+		aggreg.insert( val );
 
 		return val;
 	}
@@ -436,7 +458,8 @@ private:
 public:
 	explicit csv_aggreg ( unsigned line_max = 64*1024 ) :
 		line_max(line_max),
-		aggreg_data_sz(0)
+		aggreg_data_sz(0),
+		aggreg(10, f_hash(this), f_equal(this))
 	{
 	}
 
@@ -455,6 +478,9 @@ public:
 		int parens = 0;
 		size_t i, start_off = 0;
 		char c = 0;
+
+		conf.clear();
+		conf_keys.clear();
 
 		for ( i = 0 ; i < aggreg_str.size() ; ++i )
 		{
@@ -565,6 +591,10 @@ public:
 			return 1;
 		}
 
+		for ( unsigned i = 0 ; i < conf.size() ; ++i )
+			if ( conf[ i ].aggregator->key )
+				conf_keys.push_back( i );
+
 		aggreg_data_sz = sizeof( u_data ) * (conf.back().aggreg_idx + 1);
 
 		return 0;
@@ -586,14 +616,15 @@ public:
 		std::vector< int > key_col;
 		key_col.resize( inv_conf.size() );
 
-		// for key columns, hold the raw field as found in the input file
-		std::vector< std::string > keys;
-		keys.resize( inv_conf.size() );
-
 		for ( unsigned i = 0 ; i < inv_conf.size() ; ++i )
 			for ( unsigned j = 0 ; j < inv_conf[ i ].size() ; ++j )
 				if ( inv_conf[ i ][ j ]->aggregator->key )
 					key_col[ i ] = 1;
+
+		// we store here the current csv line keys
+		u_data cur_data[ conf.size() ];
+		for ( unsigned i = 0 ; i < conf_keys.size() ; ++i )
+			cur_data[ conf_keys[ i ] ].str = new std::string;
 
 		do
 		{
@@ -612,15 +643,12 @@ public:
 					unsigned uf_len = f_len;
 					elems[ idx_in ].clear();
 					reader->unescape_csv_field( &uf, &uf_len, &elems[ idx_in ] );
-					if ( key_col[ idx_in ] )
-						keys[ idx_in ] = std::string( f, f_len );
 				}
 
 				++idx_in;
 			}
 
-			// build aggregate key
-			std::string key;
+			// populate cur_data[ keys ]
 			for ( unsigned i = 0 ; i < inv_conf.size() ; ++i )
 				if ( key_col[ i ] )
 					for ( unsigned j = 0 ; j < inv_conf[ i ].size() ; ++j )
@@ -628,13 +656,12 @@ public:
 						struct aggreg_col *a = inv_conf[ i ][ j ];
 						if ( !a->aggregator->key )
 							continue;
-						a->aggregator->key( key, keys[ i ] );
-						key.push_back( ',' );
+						*cur_data[ a->aggreg_idx ].str = a->aggregator->key( elems[ i ] );
 					}
 
 			// aggregate
 			int first = 0;
-			u_data *aggreg_entry = aggreg_find_or_create( key, &first );
+			u_data *aggreg_entry = aggreg_find_or_create( cur_data, &first );
 			for ( unsigned i = 0 ; i < inv_conf.size() ; ++i )
 				for ( unsigned j = 0 ; j < inv_conf[ i ].size() ; ++j )
 				{
@@ -655,6 +682,9 @@ public:
 
 		} while ( reader->fetch_line() );
 
+		for ( unsigned i = 0 ; i < conf_keys.size() ; ++i )
+			delete cur_data[ conf_keys[ i ] ].str;
+
 		delete reader;
 	}
 
@@ -670,13 +700,17 @@ public:
 		std::vector< std::string > elems;
 		elems.resize( conf.size() );
 
+		// we store here the current csv line keys
+		u_data cur_data[ conf.size() ];
+		for ( unsigned i = 0 ; i < conf_keys.size() ; ++i )
+			cur_data[ conf_keys[ i ] ].str = new std::string;
+
 		do
 		{
-			// read fields, build aggregation key
+			// read fields
 			char *f = NULL;
 			unsigned f_len = 0;
 			unsigned idx_in = 0;
-			std::string key;
 			while ( reader->read_csv_field( &f, &f_len ) )
 			{
 				if ( idx_in >= conf.size() )
@@ -687,22 +721,22 @@ public:
 				elems[ idx_in ].clear();
 				reader->unescape_csv_field( &uf, &uf_len, &elems[ idx_in ] );
 				if ( conf[ idx_in ].aggregator->key )
-				{
-					conf[ idx_in ].aggregator->key( key, std::string( f, f_len ) );
-					key.push_back( ',' );
-				}
+					*cur_data[ idx_in ].str = conf[ idx_in ].aggregator->key( elems[ idx_in ] );
 
 				++idx_in;
 			}
 
 			// aggregate
 			int first = 0;
-			u_data *aggreg_entry = aggreg_find_or_create( key, &first );
+			u_data *aggreg_entry = aggreg_find_or_create( cur_data, &first );
 			for ( unsigned i = 0 ; i < conf.size() ; ++i )
 				if ( conf[ i ].aggregator->merge )
 					conf[ i ].aggregator->merge( aggreg_entry + i, &elems[ i ], first );
 
 		} while ( reader->fetch_line() );
+
+		for ( unsigned i = 0 ; i < conf_keys.size() ; ++i )
+			delete cur_data[ conf_keys[ i ] ].str;
 
 		delete reader;
 	}
@@ -712,7 +746,7 @@ public:
 	// clears aggreg
 	void dump_output( const char *filename )
 	{
-		output_buffer outbuf( filename );
+		output_buffer outbuf( filename, 1024*1024 );
 
 		for ( unsigned i = 0 ; i < conf.size() ; ++i )
 		{
@@ -724,25 +758,21 @@ public:
 		}
 		outbuf.append_nl();
 
-		std::tr1::unordered_map< std::string, u_data * >::const_iterator it = aggreg.begin();
-		while ( it != aggreg.end() )
+		for ( u_data_aggreg::const_iterator it = aggreg.begin() ; it != aggreg.end() ; ++it )
 		{
-			u_data *p = it->second;
 			for ( unsigned i = 0 ; i < conf.size() ; ++i )
 			{
 				if ( i > 0 )
 					outbuf.append( ',' );
-				std::string s;
-				conf[ i ].aggregator->out( s, p + conf[ i ].aggreg_idx );
-				outbuf.append( s );
+
+				if ( conf[ i ].aggregator->out )
+					outbuf.append( conf[ i ].aggregator->out( *it + conf[ i ].aggreg_idx ) );
 
 				if ( conf[ i ].aggregator->free )
-					conf[ i ].aggregator->free( p + conf[ i ].aggreg_idx );
+					conf[ i ].aggregator->free( *it + conf[ i ].aggreg_idx );
 			}
 			outbuf.append_nl();
-			free( p );
-
-			++it;
+			free( *it );
 		}
 
 		aggreg.clear();

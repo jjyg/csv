@@ -10,7 +10,7 @@
 #include "output_buffer.h"
 #include "csv_reader.h"
 
-#define CSV_AGGREG_VERSION "20140328"
+#define CSV_AGGREG_VERSION "20140403"
 
 /*
  * list of aggregator functions
@@ -325,6 +325,7 @@ private:
 
 		// populate the invert lookup cache from the header line + conf
 		inv_conf.clear();
+		inv_conf_other.clear();
 		inv_conf.resize( headers->size() );
 		for ( unsigned i_c = 0 ; i_c < conf.size() ; ++i_c )
 		{

@@ -10,7 +10,71 @@
 #include "output_buffer.h"
 #include "csv_reader.h"
 
-#define CSV_AGGREG_VERSION "20140403"
+#define CSV_AGGREG_VERSION "20140404"
+
+static std::string str_downcase( const std::string &str )
+{
+	std::string ret;
+	for ( unsigned i = 0 ; i < str.size() ; ++i )
+		ret.push_back( tolower( str[ i ] ) );
+	return ret;
+}
+
+/*
+ * murmur3 hash function
+ */
+static uint32_t murmur3_32( const void *key, size_t len, uint32_t seed = 0 )
+{
+	uint32_t hash = seed;
+	uint32_t *key_u32 = (uint32_t *)key;
+	uint32_t k;
+
+	while (len >= 4)
+	{
+		k = *key_u32++;
+		len -= 4;
+
+		k *= 0xcc9e2d51;
+		k = (k << 15) | (k >> (32-15));
+		k *= 0x1b873593;
+
+		hash ^= k;
+
+		hash = (hash << 13) | (hash >> (32-13));
+		hash = hash * 5 + 0xe6546b64;
+	}
+
+	uint8_t *key_u8 = (uint8_t *)key_u32;
+
+	k = 0;
+	switch (len & 3)
+	{
+	case 3: k ^= key_u8[2] << 16;
+	case 2: k ^= key_u8[1] << 8;
+	case 1: k ^= key_u8[0];
+
+		k *= 0xcc9e2d51;
+		k = (k << 15) | (k >> (32-15));
+		k *= 0x1b873593;
+
+		hash ^= k;
+	}
+
+	hash ^= len;
+	hash ^= (hash >> 16);
+	hash *= 0x85ebca6b;
+	hash ^= (hash >> 13);
+	hash *= 0xc2b2ae35;
+	hash ^= (hash >> 16);
+
+	return hash;
+}
+
+static uint32_t murmur3_32( const std::string *s, uint32_t seed = 0 )
+{
+	return murmur3_32( s->data(), s->size(), seed );
+}
+
 
 /*
  * list of aggregator functions
@@ -21,14 +85,6 @@ union u_data {
 	std::string *str;
 	std::vector< std::string > *vec_str;
 };
-
-static std::string str_downcase( const std::string &str )
-{
-	std::string ret;
-	for ( unsigned i = 0 ; i < str.size() ; ++i )
-		ret.push_back( tolower( str[ i ] ) );
-	return ret;
-}
 
 static void str_alloc( u_data *ptr )
 {
@@ -256,7 +312,6 @@ struct aggreg_descriptor {
 
 #define aggreg_descriptors_count ( sizeof(aggreg_descriptors) / sizeof(aggreg_descriptors[0]) )
 
-
 class csv_aggreg
 {
 private:
@@ -296,7 +351,7 @@ private:
 		{
 			size_t hash = 0;
 			for ( unsigned i = 0 ; i < ca->conf_keys.size() ; ++i )
-				hash ^= std::tr1::hash< std::string >()( *ptr[ ca->conf_keys[ i ] ].str );
+				hash ^= murmur3_32( ptr[ ca->conf_keys[ i ] ].str );
 			return hash;
 		}
 	};

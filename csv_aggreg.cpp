@@ -408,10 +408,12 @@ private:
 		if ( chunk == MAP_FAILED )
 		{
 			std::cerr << "mem_alloc: cannot mmap: " << strerror( errno ) << std::endl;
-			close( fd );
+			if ( fd != -1 )
+				close( fd );
 			return 1;
 		}
-		close( fd );
+		if ( fd != -1 )
+			close( fd );
 
 		// store the chunk size at the beginning of the chunk, for munmap()
 		*chunk = alloc_sz;

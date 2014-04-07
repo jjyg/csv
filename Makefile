@@ -1,6 +1,6 @@
 CC=g++
-CCOPTS=-W -Wall -O2
-LDOPTS=-s -lz
+CCOPTS=-W -Wall -O2 -fPIC
+LDOPTS=-s -lz -pie
 
 all: csv csv-aggreg
 

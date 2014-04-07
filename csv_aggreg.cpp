@@ -126,16 +126,6 @@ union u_data {
  * list of aggregator functions
  */
 
-static void str_alloc( u_data *ptr )
-{
-	ptr->str = new std::string;
-}
-
-static void str_free( u_data *ptr )
-{
-	delete ptr->str;
-}
-
 static void str_key( key_string *key, std::string &field )
 {
 	key->hash = murmur3_32( field.data(), field.size() );
@@ -144,7 +134,7 @@ static void str_key( key_string *key, std::string &field )
 	key->ptr_len = field.size();
 }
 
-static std::string str_out( u_data *ptr )
+static std::string key_out( u_data *ptr )
 {
 	return csv_reader::escape_csv_string( std::string( ptr->key->strptr(), ptr->key->strlen() ) );
 }
@@ -160,19 +150,10 @@ static void downcase_key( key_string *key, std::string &field )
 	key->ptr_len = field.size();
 }
 
-static void top_alloc( u_data *ptr )
-{
-	ptr->vec_str = new std::vector< std::string >;
-}
-
-static void top_free( u_data *ptr )
-{
-	delete ptr->vec_str;
-}
-
 static void top20_aggreg( u_data *ptr, const std::string *field, int first )
 {
-	(void)first;
+	if ( first )
+		ptr->vec_str = new std::vector< std::string >;
 
 	if ( ptr->vec_str->size() >= 20 )
 		return;
@@ -191,6 +172,7 @@ static void top20_merge( u_data *ptr, const std::string *field, int first )
 	{
 		const std::string &tmp = field->substr( last, next-last );
 		top20_aggreg( ptr, &tmp, first );
+		first = 0;
 		last = next + 1;
 		next = field->find( ',', last );
 	}
@@ -210,6 +192,9 @@ static std::string top_out( u_data *ptr )
 		tmp.append( (*ptr->vec_str)[ i ] );
 	}
 
+	delete ptr->vec_str;
+	ptr->vec_str = NULL;
+
 	return csv_reader::escape_csv_string( tmp );
 }
 
@@ -227,14 +212,30 @@ static void max_aggreg( u_data *ptr, const std::string *field, int first )
 		ptr->ll = val;
 }
 
+static std::string str_out( u_data *ptr )
+{
+	std::string str = csv_reader::escape_csv_string( *ptr->str );
+
+	delete ptr->str;
+	ptr->str = NULL;
+
+	return str;
+}
+
 static void minstr_aggreg( u_data *ptr, const std::string *field, int first )
 {
+	if ( first )
+		ptr->str = new std::string;
+
 	if ( first || *field < *ptr->str )
 		*ptr->str = *field;
 }
 
 static void maxstr_aggreg( u_data *ptr, const std::string *field, int first )
 {
+	if ( first )
+		ptr->str = new std::string;
+
 	if ( first || *field > *ptr->str )
 		*ptr->str = *field;
 }
@@ -272,9 +273,6 @@ static std::string int_out( u_data *ptr )
 struct aggreg_descriptor {
 	// aggregator name, used in config/help messages
 	const char *name;
-	// called when allocated a new aggregated_data, with ptr pointing at the designated offset
-	void (*alloc)( u_data *ptr );
-	void (*free)( u_data *ptr );
 	// called during aggregation, ptr is the same as for alloc(), field is the unescaped csv field value, first = 1 if field is the 1st entry to be aggregated here
 	void (*aggreg)( u_data *ptr, const std::string *field, int first );
 	// called during merge, similar to aggreg, but field points to the result of a previous out(aggreg())
@@ -289,24 +287,18 @@ struct aggreg_descriptor {
 		"str",
 		NULL,
 		NULL,
-		NULL,
-		NULL,
 		str_key,
-		str_out,
+		key_out,
 	},
 	{
 		"downcase",
 		NULL,
 		NULL,
-		NULL,
-		NULL,
 		downcase_key,
-		str_out,
+		key_out,
 	},
 	{
 		"top20",
-		top_alloc,
-		top_free,
 		top20_aggreg,
 		top20_merge,
 		NULL,
@@ -314,8 +306,6 @@ struct aggreg_descriptor {
 	},
 	{
 		"min",
-		NULL,
-		NULL,
 		min_aggreg,
 		min_aggreg,
 		NULL,
@@ -323,8 +313,6 @@ struct aggreg_descriptor {
 	},
 	{
 		"max",
-		NULL,
-		NULL,
 		max_aggreg,
 		max_aggreg,
 		NULL,
@@ -332,8 +320,6 @@ struct aggreg_descriptor {
 	},
 	{
 		"minstr",
-		str_alloc,
-		str_free,
 		minstr_aggreg,
 		minstr_aggreg,
 		NULL,
@@ -341,8 +327,6 @@ struct aggreg_descriptor {
 	},
 	{
 		"maxstr",
-		str_alloc,
-		str_free,
 		maxstr_aggreg,
 		maxstr_aggreg,
 		NULL,
@@ -350,8 +334,6 @@ struct aggreg_descriptor {
 	},
 	{
 		"count",
-		NULL,
-		NULL,
 		count_aggreg,
 		count_merge,
 		NULL,
@@ -709,10 +691,6 @@ private:
 			// TODO return NULL & dump partial content ?
 			throw std::bad_alloc();
 
-		for ( unsigned i = 0 ; i < conf.size() ; ++i )
-			if ( conf[ i ].aggregator->alloc )
-				conf[ i ].aggregator->alloc( val + i );
-
 		for ( unsigned i = 0 ; i < conf_keys.size() ; ++i )
 			val[ conf_keys[ i ] ].key = alloc_copy_key( key[ conf_keys[ i ] ].key );
 
@@ -1027,9 +1005,6 @@ public:
 
 				if ( conf[ i ].aggregator->out )
 					outbuf.append( conf[ i ].aggregator->out( *it + i ) );
-
-				if ( conf[ i ].aggregator->free )
-					conf[ i ].aggregator->free( *it + i );
 			}
 			outbuf.append_nl();
 		}

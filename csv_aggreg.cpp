@@ -378,7 +378,7 @@ private:
 			for ( char i = '0' ; i <= '~' ; ++i )	// '0' > '/' which is forbidden in paths
 			{
 				std::string path = directory + "/tmp_swap_" + i;
-				fd = open( path.c_str(), O_RDWR | O_CREAT | O_EXCL );
+				fd = open( path.c_str(), O_RDWR | O_CREAT | O_EXCL, 0600 );
 				if ( fd != -1 )
 				{
 					unlink( path.c_str() );

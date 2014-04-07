@@ -15,7 +15,7 @@
 #include "output_buffer.h"
 #include "csv_reader.h"
 
-#define CSV_AGGREG_VERSION "20140404"
+#define CSV_AGGREG_VERSION "20140407"
 
 static std::string str_downcase( const std::string &str )
 {
@@ -1023,6 +1023,7 @@ static const char *usage =
 "          -o <outfile>       specify output file (default=stdout)\n"
 "          -L <max line len>  specify maximum line length allowed (default=64k)\n"
 "          -m                 inputs are partial outputs from csv_aggr (map-reduce style)\n"
+"          -d <directory>     directory to store temporary swap files ; should have lots of free space\n"
 ;
 
 

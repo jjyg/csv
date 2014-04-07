@@ -75,21 +75,56 @@ static uint32_t murmur3_32( const void *key, size_t len, uint32_t seed = 0 )
 	return hash;
 }
 
-static uint32_t murmur3_32( const std::string *s, uint32_t seed = 0 )
-{
-	return murmur3_32( s->data(), s->size(), seed );
-}
 
+/*
+ * stores a hash key
+ * use a dedicated structure to cache the string hash and to minimise memory overhead
+ * this structure has 2 mode, one with the string data embedded: used when a key is stored in the hash, preferably in a mem_alloc
+ * and one with pointers: used when looking up a key from decoded csv data
+ * the embedded form is designed for compaction: 6 bytes + str data
+ */
+struct key_string {
+	uint32_t hash;	// murmur hash of the string
+	int16_t len;	// if negative, extended form (ptr/ptr_len). if == 0x7fff, actual string length is strlen(bytes).
+	// char bytes[];
+	// end of compact form
+
+	char *ptr;	// ptr to bytes, used if len < 0
+	size_t ptr_len;		// length of string pointed to by ptr
+
+	char *strptr() const
+	{
+		if ( len < 0 )
+			return ptr;
+		else
+			return (char *)this + 6;
+	}
+
+	size_t strlen() const
+	{
+		if ( len < 0 )
+			return ptr_len;
+
+		if ( len < 0x7fff )
+			return len;
+
+		return 0x7fff + ::strlen( strptr() + 0x7fff );
+	}
+};
+
+/*
+ * holds all possible forms of aggregation fields ; update as needed if you add aggregators
+ */
+union u_data {
+	long long ll;
+	struct key_string *key;
+	std::string *str;
+	std::vector< std::string > *vec_str;
+};
 
 /*
  * list of aggregator functions
  */
-
-union u_data {
-	long long ll;
-	std::string *str;
-	std::vector< std::string > *vec_str;
-};
 
 static void str_alloc( u_data *ptr )
 {
@@ -101,19 +136,28 @@ static void str_free( u_data *ptr )
 	delete ptr->str;
 }
 
-static std::string str_key( const std::string &field )
+static void str_key( key_string *key, std::string &field )
 {
-	return std::string( field );
+	key->hash = murmur3_32( field.data(), field.size() );
+	key->len = -1;
+	key->ptr = (char *)field.data();
+	key->ptr_len = field.size();
 }
 
 static std::string str_out( u_data *ptr )
 {
-	return csv_reader::escape_csv_string( *ptr->str );
+	return csv_reader::escape_csv_string( std::string( ptr->key->strptr(), ptr->key->strlen() ) );
 }
 
-static std::string downcase_key( const std::string &field )
+static void downcase_key( key_string *key, std::string &field )
 {
-	return str_downcase( field );
+	for ( unsigned i = 0 ; i < field.size() ; ++i )
+		field[ i ] = tolower( field[ i ] );
+
+	key->hash = murmur3_32( field.data(), field.size() );
+	key->len = -1;
+	key->ptr = (char *)field.data();
+	key->ptr_len = field.size();
 }
 
 static void top_alloc( u_data *ptr )
@@ -236,15 +280,15 @@ struct aggreg_descriptor {
 	// called during merge, similar to aggreg, but field points to the result of a previous out(aggreg())
 	void (*merge)( u_data *ptr, const std::string *field, int first );
 	// determine aggregation key, should append data to key. field is the raw csv field value, it is neither escaped nor unescaped.
-	std::string (*key)( const std::string &field );
+	void (*key)( key_string *k, std::string &field );
 	// called when dumping aggregation results, ptr is the same as for alloc().
 	std::string (*out)( u_data *ptr );
 } aggreg_descriptors[] =
 {
 	{
 		"str",
-		str_alloc,
-		str_free,
+		NULL,
+		NULL,
 		NULL,
 		NULL,
 		str_key,
@@ -252,8 +296,8 @@ struct aggreg_descriptor {
 	},
 	{
 		"downcase",
-		str_alloc,
-		str_free,
+		NULL,
+		NULL,
 		NULL,
 		NULL,
 		downcase_key,
@@ -399,7 +443,7 @@ private:
 	}
 
 public:
-	mem_alloc( std::string &dir, size_t min = 16*1024*1024, size_t max=256*1024*1024, size_t align=4 ) :
+	mem_alloc( const std::string &dir, size_t min = 16*1024*1024, size_t max=256*1024*1024, size_t align=4 ) :
 		directory(dir),
 		last_alloc_sz(0),
 		min_alloc_sz(min),
@@ -437,6 +481,9 @@ public:
 class csv_aggreg
 {
 private:
+	// allocator for u_data & keys
+	mem_alloc memalloc;
+
 	// csv reader line_max
 	unsigned line_max;
 
@@ -446,7 +493,7 @@ private:
 		std::string outname;
 		// input column name (may be empty)
 		std::string colname;
-		// offset into the aggregated u_data * blob for this column
+		// index into the aggregated u_data * blob for this column ( = index of the entry in conf[] )
 		unsigned aggreg_idx;
 		// pointer to the aggregation functions
 		struct aggreg_descriptor *aggregator;
@@ -456,7 +503,6 @@ private:
 
 	// aggregation configuration (list of output columns)
 	std::vector< struct aggreg_col > conf;
-	unsigned aggreg_data_sz;
 
 	// internal cache: maps input column indexes to a vector of output columns (NULL if input col is unused)
 	std::vector< std::vector< struct aggreg_col * > > inv_conf;
@@ -473,7 +519,7 @@ private:
 		{
 			size_t hash = 0;
 			for ( unsigned i = 0 ; i < ca->conf_keys.size() ; ++i )
-				hash ^= murmur3_32( ptr[ ca->conf_keys[ i ] ].str );
+				hash ^= ptr[ ca->conf_keys[ i ] ].key->hash;
 			return hash;
 		}
 	};
@@ -481,15 +527,32 @@ private:
 	friend struct f_equal;
 	struct f_equal
 	{
+	private:
+		static bool same_keys( const key_string *k1, const key_string *k2 )
+		{
+			if ( k1->hash != k2->hash )
+				return false;
+
+			size_t sz = k1->strlen();
+			if ( sz != k2->strlen() )
+				return false;
+
+			const char *c1 = k1->strptr(), *c2 = k2->strptr();
+			if ( memcmp( c1, c2, sz ) )
+				return false;
+
+			return true;
+		}
+
+	public:
 		csv_aggreg *ca;
 		explicit f_equal( csv_aggreg *ca ) : ca(ca) {}
 		bool operator()( const u_data *p1, const u_data *p2 ) const
 		{
-			bool match = true;
 			for ( unsigned i = 0 ; i < ca->conf_keys.size() ; ++i )
-				if ( *p1[ ca->conf_keys[ i ] ].str != *p2[ ca->conf_keys[ i ] ].str )
-					match = false;
-			return match;
+				if ( !same_keys( p1[ ca->conf_keys[ i ] ].key, p2[ ca->conf_keys[ i ] ].key ) )
+					return false;
+			return true;
 		}
 	};
 
@@ -605,8 +668,33 @@ private:
 		return NULL;
 	}
 
+	// allocate & copy a key_string
+	key_string *alloc_copy_key( const key_string *k )
+	{
+		size_t strlen = k->strlen();
+		size_t alloc_len = strlen;
+		if ( alloc_len >= 0x7fff )
+			++alloc_len;
+
+		key_string *out = (key_string *)memalloc.alloc( 4 + 2 + alloc_len );
+		if ( !out )
+			throw std::bad_alloc();
+
+		out->hash = k->hash;
+		if ( strlen < 0x7fff )
+			out->len = strlen;
+		else
+			out->len = 0x7fff;
+		memcpy( out->strptr(), k->strptr(), strlen );
+		if ( strlen >= 0x7fff )
+			out->strptr()[ strlen ] = 0;
+
+		return out;
+	}
+
 	// return the pointer for a given key, allocate it if necessary
 	// sets *first = 1 if a new buffer was allocated
+	// if so, all keys were copied using alloc_copy_key
 	u_data *aggreg_find_or_create( u_data *key, int *first )
 	{
 		u_data_aggreg::const_iterator it = aggreg.find( key );
@@ -615,17 +703,18 @@ private:
 
 		*first = 1;
 
-		u_data *val = (u_data *)malloc( aggreg_data_sz );
+		u_data *val = (u_data *)memalloc.alloc( sizeof(u_data) * conf.size() );
+
 		if ( !val )
 			// TODO return NULL & dump partial content ?
 			throw std::bad_alloc();
 
 		for ( unsigned i = 0 ; i < conf.size() ; ++i )
 			if ( conf[ i ].aggregator->alloc )
-				conf[ i ].aggregator->alloc( val + conf[ i ].aggreg_idx );
+				conf[ i ].aggregator->alloc( val + i );
 
 		for ( unsigned i = 0 ; i < conf_keys.size() ; ++i )
-			*val[ conf_keys[ i ] ].str = *key[ conf_keys[ i ] ].str;
+			val[ conf_keys[ i ] ].key = alloc_copy_key( key[ conf_keys[ i ] ].key );
 
 		aggreg.insert( val );
 
@@ -633,9 +722,9 @@ private:
 	}
 
 public:
-	explicit csv_aggreg ( unsigned line_max = 64*1024 ) :
+	explicit csv_aggreg ( const std::string &bigtmp_directory = "", unsigned line_max = 64*1024 ) :
+		memalloc( bigtmp_directory ),
 		line_max(line_max),
-		aggreg_data_sz(0),
 		aggreg(10, f_hash(this), f_equal(this))
 	{
 	}
@@ -675,9 +764,7 @@ public:
 				if ( parens == 1 )
 				{
 					col = new aggreg_col();
-
-					if ( conf.size() )
-						col->aggreg_idx = conf.back().aggreg_idx + 1;
+					col->aggreg_idx = conf.size();
 
 					col->aggregator = find_aggregator( tmp );
 					if ( !col->aggregator ) {
@@ -721,15 +808,13 @@ public:
 					// colname only, implicit str(colname)
 	implicit_str:
 					col = new aggreg_col();
+					col->aggreg_idx = conf.size();
 
 					if ( outname.size() )
 						col->outname = outname;
 					else
 						col->outname = aggreg_str.substr( start_off, i-start_off );
 					outname.clear();
-
-					if ( conf.size() )
-						col->aggreg_idx = conf.back().aggreg_idx + 1;
 
 					col->aggregator = find_aggregator( "str" );
 					if ( !col->aggregator )
@@ -772,8 +857,6 @@ public:
 			if ( conf[ i ].aggregator->key )
 				conf_keys.push_back( i );
 
-		aggreg_data_sz = sizeof( u_data ) * (conf.back().aggreg_idx + 1);
-
 		return 0;
 	}
 
@@ -801,7 +884,7 @@ public:
 		// we store here the current csv line keys
 		u_data cur_data[ conf.size() ];
 		for ( unsigned i = 0 ; i < conf_keys.size() ; ++i )
-			cur_data[ conf_keys[ i ] ].str = new std::string;
+			cur_data[ conf_keys[ i ] ].key = new key_string;
 
 		do
 		{
@@ -833,7 +916,7 @@ public:
 						struct aggreg_col *a = inv_conf[ i ][ j ];
 						if ( !a->aggregator->key )
 							continue;
-						*cur_data[ a->aggreg_idx ].str = a->aggregator->key( elems[ i ] );
+						a->aggregator->key( cur_data[ a->aggreg_idx ].key, elems[ i ] );
 					}
 
 			// aggregate
@@ -860,7 +943,7 @@ public:
 		} while ( reader->fetch_line() );
 
 		for ( unsigned i = 0 ; i < conf_keys.size() ; ++i )
-			delete cur_data[ conf_keys[ i ] ].str;
+			delete cur_data[ conf_keys[ i ] ].key;
 
 		delete reader;
 	}
@@ -880,7 +963,7 @@ public:
 		// we store here the current csv line keys
 		u_data cur_data[ conf.size() ];
 		for ( unsigned i = 0 ; i < conf_keys.size() ; ++i )
-			cur_data[ conf_keys[ i ] ].str = new std::string;
+			cur_data[ conf_keys[ i ] ].key = new key_string;
 
 		do
 		{
@@ -898,7 +981,7 @@ public:
 				elems[ idx_in ].clear();
 				reader->unescape_csv_field( &uf, &uf_len, &elems[ idx_in ] );
 				if ( conf[ idx_in ].aggregator->key )
-					*cur_data[ idx_in ].str = conf[ idx_in ].aggregator->key( elems[ idx_in ] );
+					conf[ idx_in ].aggregator->key( cur_data[ idx_in ].key, elems[ idx_in ] );
 
 				++idx_in;
 			}
@@ -913,7 +996,7 @@ public:
 		} while ( reader->fetch_line() );
 
 		for ( unsigned i = 0 ; i < conf_keys.size() ; ++i )
-			delete cur_data[ conf_keys[ i ] ].str;
+			delete cur_data[ conf_keys[ i ] ].key;
 
 		delete reader;
 	}
@@ -943,13 +1026,12 @@ public:
 					outbuf.append( ',' );
 
 				if ( conf[ i ].aggregator->out )
-					outbuf.append( conf[ i ].aggregator->out( *it + conf[ i ].aggreg_idx ) );
+					outbuf.append( conf[ i ].aggregator->out( *it + i ) );
 
 				if ( conf[ i ].aggregator->free )
-					conf[ i ].aggregator->free( *it + conf[ i ].aggreg_idx );
+					conf[ i ].aggregator->free( *it + i );
 			}
 			outbuf.append_nl();
-			free( *it );
 		}
 
 		aggreg.clear();
@@ -982,8 +1064,9 @@ int main ( int argc, char * argv[] )
 	char *outfile = NULL;
 	unsigned line_max = 64*1024;
 	bool merge = false;
+	std::string bigtmpdir = "";
 
-	while ( (opt = getopt(argc, argv, "hVo:L:m")) != -1 )
+	while ( (opt = getopt(argc, argv, "hVo:L:md:")) != -1 )
 	{
 		switch (opt)
 		{
@@ -1007,6 +1090,10 @@ int main ( int argc, char * argv[] )
 			merge = true;
 			break;
 
+		case 'd':
+			bigtmpdir = std::string( optarg );
+			break;
+
 		default:
 			std::cerr << "Unknwon option: " << opt << std::endl << usage << std::endl;
 			return EXIT_FAILURE;
@@ -1019,7 +1106,7 @@ int main ( int argc, char * argv[] )
 		return EXIT_FAILURE;
 	}
 
-	csv_aggreg aggregator( line_max );
+	csv_aggreg aggregator( bigtmpdir, line_max );
 
 	if ( aggregator.parse_aggregate_descriptor( argv[ optind++ ] ) )
 		return EXIT_FAILURE;

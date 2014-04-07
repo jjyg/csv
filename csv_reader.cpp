@@ -214,17 +214,20 @@ public:
 	}
 
 	explicit line_reader ( const char *filename, const unsigned line_max = 64*1024 ) :
+		should_delete_input(false),
 		badfile(false),
 		buf_cur(0),
 		buf_end(0),
 		buf_size(line_max),
+#ifndef NO_ZLIB
+		zbuf(NULL),
+#endif
 		input_filter(0)
 	{
 		buf = new char[buf_size];
 
 		if ( filename && filename[ 0 ] == '-' && filename[ 1 ] == 0 )
 		{
-			should_delete_input = false;
 			input = &std::cin;
 		}
 		else if ( filename )
@@ -246,7 +249,6 @@ public:
 		}
 		else
 		{
-			should_delete_input = false;
 			input = &std::cin;
 		}
 
@@ -254,8 +256,6 @@ public:
 		buf_end = input->gcount();
 
 #ifndef NO_ZLIB
-		zbuf = NULL;
-
 		if ( buf_end >= 2 && buf[0] == 0x1f && buf[1] == (char)0x8b )
 			// zlib header
 			init_zstream();

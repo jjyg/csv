@@ -15,7 +15,7 @@
 #include "output_buffer.h"
 #include "csv_reader.h"
 
-#define CSV_AGGREG_VERSION "20140407"
+#define CSV_AGGREG_VERSION "20140410"
 
 static std::string str_downcase( const std::string &str )
 {
@@ -579,7 +579,7 @@ inline uint64_t fmix64 ( uint64_t k )
 static uint64_t murmur3_64( const void *key, size_t len, uint64_t seed = 0 )
 {
 	const uint8_t * data = (const uint8_t *)key;
-	const size_t nblocks = len / 16;
+	size_t nblocks = len / 16;
 
 	uint64_t h1 = seed;
 	uint64_t h2 = seed;
@@ -589,7 +589,7 @@ static uint64_t murmur3_64( const void *key, size_t len, uint64_t seed = 0 )
 
 	const uint64_t * blocks = (const uint64_t *)(data);
 
-	while ( nblocks )
+	while ( nblocks-- )
 	{
 		uint64_t k1 = *blocks++;
 		uint64_t k2 = *blocks++;

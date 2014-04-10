@@ -25,99 +25,13 @@ static std::string str_downcase( const std::string &str )
 	return ret;
 }
 
-/*
- * murmur3 hash function
- */
-static uint32_t murmur3_32( const void *key, size_t len, uint32_t seed = 0 )
-{
-	uint32_t hash = seed;
-	uint32_t *key_u32 = (uint32_t *)key;
-	uint32_t k;
-
-	while (len >= 4)
-	{
-		k = *key_u32++;
-		len -= 4;
-
-		k *= 0xcc9e2d51;
-		k = (k << 15) | (k >> (32-15));
-		k *= 0x1b873593;
-
-		hash ^= k;
-
-		hash = (hash << 13) | (hash >> (32-13));
-		hash = hash * 5 + 0xe6546b64;
-	}
-
-	uint8_t *key_u8 = (uint8_t *)key_u32;
-
-	k = 0;
-	switch (len & 3)
-	{
-	case 3: k ^= key_u8[2] << 16;
-	case 2: k ^= key_u8[1] << 8;
-	case 1: k ^= key_u8[0];
-
-		k *= 0xcc9e2d51;
-		k = (k << 15) | (k >> (32-15));
-		k *= 0x1b873593;
-
-		hash ^= k;
-	}
-
-	hash ^= len;
-	hash ^= (hash >> 16);
-	hash *= 0x85ebca6b;
-	hash ^= (hash >> 13);
-	hash *= 0xc2b2ae35;
-	hash ^= (hash >> 16);
-
-	return hash;
-}
-
-
-/*
- * stores a hash key
- * use a dedicated structure to cache the string hash and to minimise memory overhead
- * this structure has 2 mode, one with the string data embedded: used when a key is stored in the hash, preferably in a mem_alloc
- * and one with pointers: used when looking up a key from decoded csv data
- * the embedded form is designed for compaction: 6 bytes + str data
- */
-struct key_string {
-	uint32_t hash;	// murmur hash of the string
-	int16_t len;	// if negative, extended form (ptr/ptr_len). if == 0x7fff, actual string length is strlen(bytes).
-	// char bytes[];
-	// end of compact form
-
-	char *ptr;	// ptr to bytes, used if len < 0
-	size_t ptr_len;		// length of string pointed to by ptr
-
-	char *strptr() const
-	{
-		if ( len < 0 )
-			return ptr;
-		else
-			return (char *)this + 6;
-	}
-
-	size_t strlen() const
-	{
-		if ( len < 0 )
-			return ptr_len;
-
-		if ( len < 0x7fff )
-			return len;
-
-		return 0x7fff + ::strlen( strptr() + 0x7fff );
-	}
-};
 
 /*
  * holds all possible forms of aggregation fields ; update as needed if you add aggregators
  */
 union u_data {
 	long long ll;
-	struct key_string *key;
+	char *key;
 	std::string *str;
 	std::vector< std::string > *vec_str;
 };
@@ -126,28 +40,34 @@ union u_data {
  * list of aggregator functions
  */
 
-static void str_key( key_string *key, std::string &field )
+static void str_key( char **field, size_t *field_len )
 {
-	key->hash = murmur3_32( field.data(), field.size() );
-	key->len = -1;
-	key->ptr = (char *)field.data();
-	key->ptr_len = field.size();
+	(void)field;
+	(void)field_len;
 }
 
-static std::string key_out( u_data *ptr )
+static void key_out( u_data *ptr, output_buffer &out )
 {
-	return csv_reader::escape_csv_string( std::string( ptr->key->strptr(), ptr->key->strlen() ) );
+	out.append( '"' );
+	size_t len = strlen( ptr->key );
+	char *tmp = ptr->key, *tmp2;
+	while ( len > 0 && (tmp2 = (char *)memchr( tmp, '"', len )) )
+	{
+		++tmp2;
+		out.append( tmp, tmp2 - tmp );
+		out.append( '"' );
+		len -= tmp2 - tmp;
+		tmp = tmp2;
+	}
+	if ( len > 0 )
+		out.append( tmp, len );
+	out.append( '"' );
 }
 
-static void downcase_key( key_string *key, std::string &field )
+static void downcase_key( char **field, size_t *field_len )
 {
-	for ( unsigned i = 0 ; i < field.size() ; ++i )
-		field[ i ] = tolower( field[ i ] );
-
-	key->hash = murmur3_32( field.data(), field.size() );
-	key->len = -1;
-	key->ptr = (char *)field.data();
-	key->ptr_len = field.size();
+	for ( unsigned i = 0 ; i < *field_len ; ++i )
+		(*field)[ i ] = tolower( (*field)[ i ] );
 }
 
 static void top20_aggreg( u_data *ptr, const std::string *field, int first )
@@ -181,7 +101,7 @@ static void top20_merge( u_data *ptr, const std::string *field, int first )
 	top20_aggreg( ptr, &tmp, first );
 }
 
-static std::string top_out( u_data *ptr )
+static void top_out( u_data *ptr, output_buffer &out )
 {
 	std::string tmp;
 
@@ -192,10 +112,10 @@ static std::string top_out( u_data *ptr )
 		tmp.append( (*ptr->vec_str)[ i ] );
 	}
 
+	out.append( csv_reader::escape_csv_string( tmp ) );
+
 	delete ptr->vec_str;
 	ptr->vec_str = NULL;
-
-	return csv_reader::escape_csv_string( tmp );
 }
 
 static void min_aggreg( u_data *ptr, const std::string *field, int first )
@@ -212,14 +132,12 @@ static void max_aggreg( u_data *ptr, const std::string *field, int first )
 		ptr->ll = val;
 }
 
-static std::string str_out( u_data *ptr )
+static void str_out( u_data *ptr, output_buffer &out )
 {
-	std::string str = csv_reader::escape_csv_string( *ptr->str );
+	out.append( csv_reader::escape_csv_string( *ptr->str ) );
 
 	delete ptr->str;
 	ptr->str = NULL;
-
-	return str;
 }
 
 static void minstr_aggreg( u_data *ptr, const std::string *field, int first )
@@ -256,13 +174,13 @@ static void count_merge( u_data *ptr, const std::string *field, int first )
 	ptr->ll += strtoll( field->c_str(), 0, 0 );
 }
 
-static std::string int_out( u_data *ptr )
+static void int_out( u_data *ptr, output_buffer &out )
 {
 	char buf[16];
 	unsigned buf_sz = snprintf( buf, sizeof(buf), "%lld", ptr->ll );
 	if ( buf_sz > sizeof(buf) )
 		buf_sz = sizeof(buf);
-	return std::string( buf, buf_sz );
+	out.append( buf, buf_sz );
 }
 
 
@@ -278,9 +196,9 @@ struct aggreg_descriptor {
 	// called during merge, similar to aggreg, but field points to the result of a previous out(aggreg())
 	void (*merge)( u_data *ptr, const std::string *field, int first );
 	// determine aggregation key, should append data to key. field is the raw csv field value, it is neither escaped nor unescaped.
-	void (*key)( key_string *k, std::string &field );
+	void (*key)( char **k, size_t *klen );
 	// called when dumping aggregation results, ptr is the same as for alloc().
-	std::string (*out)( u_data *ptr );
+	void (*out)( u_data *ptr, output_buffer &out );
 } aggreg_descriptors[] =
 {
 	{
@@ -355,8 +273,8 @@ private:
 	size_t last_alloc_sz;
 	size_t min_alloc_sz;
 	size_t max_alloc_sz;
-	size_t align;
-	uint8_t *next_alloc;
+	char *cur_chunk;
+	size_t next_alloc_offset;
 	size_t cur_chunk_left;
 
 	int alloc_new_chunk( size_t want )
@@ -420,20 +338,21 @@ private:
 		chunks.push_back( chunk );
 
 		// setup vars used by alloc()
-		next_alloc = (uint8_t *)(chunk + 1);
-		cur_chunk_left = alloc_sz - sizeof(size_t);
+		cur_chunk = (char *)chunk;
+		next_alloc_offset = sizeof(size_t);
+		cur_chunk_left = alloc_sz - next_alloc_offset;
 
 		return 0;
 	}
 
 public:
-	mem_alloc( const std::string &dir, size_t min = 16*1024*1024, size_t max=256*1024*1024, size_t align=4 ) :
+	explicit mem_alloc( const std::string &dir, size_t min = 16*1024*1024, size_t max=256*1024*1024 ) :
 		directory(dir),
 		last_alloc_sz(0),
 		min_alloc_sz(min),
 		max_alloc_sz(max),
-		align(align),
-		next_alloc(NULL),
+		cur_chunk(NULL),
+		next_alloc_offset(0),
 		cur_chunk_left(0)
 	{
 	}
@@ -444,23 +363,278 @@ public:
 			munmap( (void*)chunks[ i ], *chunks[ i ] );
 	}
 
-	void *alloc( size_t size )
+	void *alloc( size_t size, size_t align )
 	{
-		if ( align > 1 && (size & (align-1)) )
-			size += align - (size & (align-1));
+		size_t pad = 0;
+		if ( align > 1 && (next_alloc_offset & (align-1)) )
+			pad = align - (next_alloc_offset & (align-1));
 
-		if ( size > cur_chunk_left )
-			if ( alloc_new_chunk( size ) )
+		if ( size + pad > cur_chunk_left )
+			if ( alloc_new_chunk( size + pad ) )
 				return NULL;
 
-		void *ret = (void *)next_alloc;
-		next_alloc += size;
-		cur_chunk_left -= size;
+		void *ret = (void *)(cur_chunk + pad + next_alloc_offset);
+		next_alloc_offset += size + pad;
+		cur_chunk_left -= size + pad;
 
 		return ret;
 	}
+
+private:
+	mem_alloc ( const mem_alloc& );
+	mem_alloc& operator=( const mem_alloc& );
 };
 
+
+/*
+ * an entry in the aggregation hash set
+ * corresponds to one output line
+ */
+struct hash_element
+{
+	uint64_t hash;
+	u_data list[];
+};
+
+
+/*
+ * a hash set with low memory overhead
+ * insert-only, does not support element deletion
+ * actually an array of hash_elements, with quadratic probing (loosely inspired from google sparsehash)
+ */
+class hashset
+{
+private:
+	uint64_t n_elements;	/* size of the array */
+	uint64_t n_elements_inuse;	/* number of elements in use ; should stay < 0.7*n_elements */
+	// TODO split this table if it becomes too large
+	hash_element **table;
+
+public:
+	explicit hashset( uint64_t nelem = 1024 )
+	{
+		n_elements = nelem;
+		n_elements_inuse = 0;
+		table = (hash_element **)malloc( nelem * sizeof(*table) );
+		if ( !table )
+			throw std::bad_alloc();
+		memset( table, 0, nelem * sizeof(*table) );
+	}
+
+	~hashset()
+	{
+		free( table );
+	}
+
+	friend struct const_iterator;
+	struct const_iterator
+	{
+		const hashset *hash;
+		uint64_t idx;
+
+		explicit const_iterator( const hashset *hash = NULL, uint64_t idx = 0 ) : hash( hash ), idx( idx ) {}
+
+		hash_element * operator->() const { return hash->table[ idx ]; }
+
+		bool operator==(const const_iterator& it) const { return hash == it.hash && idx == it.idx; }
+		bool operator!=(const const_iterator& it) const { return !(*this == it); }
+
+		const_iterator & operator++()
+		{
+			while ( ++idx < hash->n_elements )
+				if ( hash->table[ idx ] )
+					break;
+			return *this;
+		}
+	};
+
+	const_iterator begin() const
+	{
+		const_iterator it( this, 0 );
+		if ( !table[ 0 ] )
+			++it;
+		return it;
+	}
+
+	const_iterator end() const
+	{
+		return const_iterator( this, n_elements );
+	}
+
+	void resize( uint64_t new_nelem )
+	{
+		hash_element **new_table = (hash_element **)malloc( new_nelem * sizeof(*table) );
+		if ( !new_table )
+			throw std::bad_alloc();
+
+		memset( new_table, 0, new_nelem * sizeof(*table) );
+
+		for ( uint64_t i = 0 ; i < n_elements ; ++i )
+			if ( table[ i ] )
+			{
+				uint64_t idx = table[ i ]->hash;
+				for ( unsigned quad_probe = 0 ; quad_probe < n_elements_inuse ; idx += ++quad_probe )
+				{
+					hash_element **cur = &new_table[ idx % new_nelem ];
+					if ( !*cur )
+					{
+						*cur = table[ i ];
+						break;
+					}
+				}
+			}
+
+		free( table );
+		table = new_table;
+		n_elements = new_nelem;
+	}
+
+	/* look for an entry with a given hash / set of keys, return it or NULL
+	 * keys should be in the same order as hash_elem->list, and hold non-NULL for every key
+	 */
+	hash_element *find( uint64_t hash, const std::vector<char *> key, const std::vector< size_t > key_len )
+	{
+		uint64_t idx = hash;
+
+		// use arbitrary upper bound to avoid infinite loops with full table ; should never happen unless table is too full
+		for ( unsigned quad_probe = 0 ; quad_probe < n_elements_inuse + 1 ; idx += ++quad_probe )
+		{
+			hash_element *cur = table[ idx % n_elements ];
+			if ( !cur )
+				// end of collision list
+				return NULL;
+
+			if ( cur->hash == hash )
+			{
+				// check for hash collisions
+				bool same = true;
+				for ( unsigned i = 0 ; same && i < key.size() ; ++i )
+					if ( key[ i ] )
+					{
+						size_t sz = strlen( cur->list[ i ].key );
+						if ( key_len[ i ] != sz ||
+						     memcmp( key[ i ], cur->list[ i ].key, sz ) != 0 )
+							same = false;
+					}
+
+				if ( same )
+					return cur;
+			}
+		}
+
+		std::cerr << "hash table failed ! (find)" << std::endl;
+		// XXX resize( 2*n_elements ) ?
+
+		return NULL;
+	}
+
+	/* inserts a new entry
+	 * may trigger a resize( 2*oldsize )
+	 * does not check for a pre-existing entry with the same key, only use after find_entry returned NULL */
+	void insert( hash_element *entry )
+	{
+		uint64_t idx = entry->hash;
+		++n_elements_inuse;
+
+		if ( n_elements_inuse > n_elements * 7 / 10 )
+			resize( n_elements * 2 );
+
+		for ( unsigned quad_probe = 0 ; quad_probe < n_elements_inuse ; idx += ++quad_probe )
+		{
+			hash_element **cur = &table[ idx % n_elements ];
+			if ( !*cur )
+			{
+				*cur = entry;
+				return;
+			}
+		}
+
+		std::cerr << "hash table failed ! (insert)" << std::endl;
+		// XXX
+	}
+
+private:
+	hashset ( const hashset& );
+	hashset& operator=( const hashset& );
+};
+
+
+/*
+ * murmur3 hash function, combining high and low from 128-bit original hash
+ */
+inline uint64_t rotl64( uint64_t x, int8_t r )
+{
+	  return (x << r) | (x >> (64 - r));
+}
+inline uint64_t fmix64 ( uint64_t k )
+{
+	k ^= k >> 33;
+	k *= 0xff51afd7ed558ccdULL;
+	k ^= k >> 33;
+	k *= 0xc4ceb9fe1a85ec53ULL;
+	k ^= k >> 33;
+
+	return k;
+}
+static uint64_t murmur3_64( const void *key, size_t len, uint64_t seed = 0 )
+{
+	const uint8_t * data = (const uint8_t *)key;
+	const size_t nblocks = len / 16;
+
+	uint64_t h1 = seed;
+	uint64_t h2 = seed;
+
+	const uint64_t c1 = 0x87c37b91114253d5ULL;
+	const uint64_t c2 = 0x4cf5ad432745937fULL;
+
+	const uint64_t * blocks = (const uint64_t *)(data);
+
+	while ( nblocks )
+	{
+		uint64_t k1 = *blocks++;
+		uint64_t k2 = *blocks++;
+
+		k1 *= c1; k1 = rotl64(k1,31); k1 *= c2; h1 ^= k1;
+		h1 = rotl64(h1, 27); h1 += h2; h1 = h1*5 + 0x52dce729;
+
+		k2 *= c2; k2 = rotl64(k2,33); k2 *= c1; h2 ^= k2;
+		h2 = rotl64(h2, 31); h2 += h1; h2 = h2*5 + 0x38495ab5;
+	}
+
+	const uint8_t * tail = (const uint8_t*)(blocks);
+
+	uint64_t k1 = 0;
+	uint64_t k2 = 0;
+
+	switch(len & 15)
+	{
+		case 15: k2 ^= ((uint64_t)tail[14]) << 48;
+		case 14: k2 ^= ((uint64_t)tail[13]) << 40;
+		case 13: k2 ^= ((uint64_t)tail[12]) << 32;
+		case 12: k2 ^= ((uint64_t)tail[11]) << 24;
+		case 11: k2 ^= ((uint64_t)tail[10]) << 16;
+		case 10: k2 ^= ((uint64_t)tail[ 9]) << 8;
+		case  9: k2 ^= ((uint64_t)tail[ 8]) << 0;
+			 k2 *= c2; k2 = rotl64(k2,33); k2 *= c1; h2 ^= k2;
+
+		case  8: k1 ^= ((uint64_t)tail[ 7]) << 56;
+		case  7: k1 ^= ((uint64_t)tail[ 6]) << 48;
+		case  6: k1 ^= ((uint64_t)tail[ 5]) << 40;
+		case  5: k1 ^= ((uint64_t)tail[ 4]) << 32;
+		case  4: k1 ^= ((uint64_t)tail[ 3]) << 24;
+		case  3: k1 ^= ((uint64_t)tail[ 2]) << 16;
+		case  2: k1 ^= ((uint64_t)tail[ 1]) << 8;
+		case  1: k1 ^= ((uint64_t)tail[ 0]) << 0;
+			 k1 *= c1; k1 = rotl64(k1,31); k1 *= c2; h1 ^= k1;
+	};
+
+	h1 ^= len; h2 ^= len;
+	h1 += h2; h2 += h1;
+	h1 = fmix64(h1); h2 = fmix64(h2);
+	h1 += h2; h2 += h1;
+
+	return h1 ^ h2;
+}
 
 class csv_aggreg
 {
@@ -479,70 +653,19 @@ private:
 		std::string colname;
 		// index into the aggregated u_data * blob for this column ( = index of the entry in conf[] )
 		unsigned aggreg_idx;
+		// index of the input column used for this output column (may change for each input file)
+		int input_col_idx;
 		// pointer to the aggregation functions
 		struct aggreg_descriptor *aggregator;
 
-		explicit aggreg_col() : outname(), colname(), aggreg_idx(0), aggregator(NULL) {}
+		explicit aggreg_col() : outname(), colname(), aggreg_idx(0), input_col_idx(-1), aggregator(NULL) {}
 	};
 
 	// aggregation configuration (list of output columns)
 	std::vector< struct aggreg_col > conf;
 
-	// internal cache: maps input column indexes to a vector of output columns (NULL if input col is unused)
-	std::vector< std::vector< struct aggreg_col * > > inv_conf;
-	// points to aggreg_cols not listed in inv_conf (ie not linked to an input column)
-	std::vector< struct aggreg_col * > inv_conf_other;
-	std::vector< unsigned > conf_keys;
-
-	friend struct f_hash;
-	struct f_hash
-	{
-		csv_aggreg *ca;
-		explicit f_hash( csv_aggreg *ca ) : ca(ca) {}
-		size_t operator()( const u_data * ptr ) const
-		{
-			size_t hash = 0;
-			for ( unsigned i = 0 ; i < ca->conf_keys.size() ; ++i )
-				hash ^= ptr[ ca->conf_keys[ i ] ].key->hash;
-			return hash;
-		}
-	};
-
-	friend struct f_equal;
-	struct f_equal
-	{
-	private:
-		static bool same_keys( const key_string *k1, const key_string *k2 )
-		{
-			if ( k1->hash != k2->hash )
-				return false;
-
-			size_t sz = k1->strlen();
-			if ( sz != k2->strlen() )
-				return false;
-
-			const char *c1 = k1->strptr(), *c2 = k2->strptr();
-			if ( memcmp( c1, c2, sz ) )
-				return false;
-
-			return true;
-		}
-
-	public:
-		csv_aggreg *ca;
-		explicit f_equal( csv_aggreg *ca ) : ca(ca) {}
-		bool operator()( const u_data *p1, const u_data *p2 ) const
-		{
-			for ( unsigned i = 0 ; i < ca->conf_keys.size() ; ++i )
-				if ( !same_keys( p1[ ca->conf_keys[ i ] ].key, p2[ ca->conf_keys[ i ] ].key ) )
-					return false;
-			return true;
-		}
-	};
-
 	// aggregated data store
-	typedef std::tr1::unordered_set< u_data *, f_hash, f_equal> u_data_aggreg;
-	u_data_aggreg aggreg;
+	hashset u_data_aggreg;
 
 	// find an aggregator struct by name (eg "count", "min"...)
 	struct aggreg_descriptor *find_aggregator( const std::string &name )
@@ -555,7 +678,9 @@ private:
 	}
 
 	// create a csv_reader for aggregation, read headerline, setup caches from aggreg_conf
-	csv_reader *start_reader_aggreg( const char *filename )
+	csv_reader *start_reader_aggreg( const char *filename,
+			std::vector< std::vector< struct aggreg_col * > > &inv_conf,
+			std::vector< struct aggreg_col * > &inv_conf_other )
 	{
 		std::vector< std::string > *headers;
 		csv_reader *reader = new csv_reader( filename, ',', '"', line_max );
@@ -569,20 +694,19 @@ private:
 		headers = reader->parse_line();
 
 		// populate the invert lookup cache from the header line + conf
-		inv_conf.clear();
-		inv_conf_other.clear();
 		inv_conf.resize( headers->size() );
 		for ( unsigned i_c = 0 ; i_c < conf.size() ; ++i_c )
 		{
-			int seen = 0;
+			conf[ i_c ].input_col_idx = -1;
 			for ( unsigned i_h = 0 ; i_h < headers->size() ; ++i_h )
 				if ( str_downcase( conf[ i_c ].colname ) == str_downcase( headers->at( i_h ) ) )
 				{
-					inv_conf[ i_h ].push_back( &conf[ i_c ] );
-					seen = 1;
+					conf[ i_c ].input_col_idx = i_h;
+					if ( conf[ i_c ].aggregator->aggreg )
+						inv_conf[ i_h ].push_back( &conf[ i_c ] );
 				}
 
-			if ( !seen )
+			if ( conf[ i_c ].input_col_idx == -1 )
 			{
 				if ( conf[ i_c ].colname.size() )
 				{
@@ -591,7 +715,8 @@ private:
 					goto fail;
 				}
 
-				inv_conf_other.push_back( &conf[ i_c ] );
+				if ( conf[ i_c ].aggregator->aggreg )
+					inv_conf_other.push_back( &conf[ i_c ] );
 			}
 		}
 
@@ -652,60 +777,57 @@ private:
 		return NULL;
 	}
 
-	// allocate & copy a key_string
-	key_string *alloc_copy_key( const key_string *k )
+
+	/*
+	 * return the pointer for a given set of keys, allocate it if necessary
+	 * sets *first = 1 if a new buffer was allocated
+	 * copies keys bytes to memalloc
+	 */
+	hash_element *aggreg_find_or_create( const std::vector< char * > key, const std::vector< size_t > key_len, int *first )
 	{
-		size_t strlen = k->strlen();
-		size_t alloc_len = strlen;
-		if ( alloc_len >= 0x7fff )
-			++alloc_len;
+		uint64_t hash = 0;
+		for ( unsigned i = 0 ; i < key.size() ; ++i )
+			if ( key[ i ] )
+				hash = murmur3_64( key[ i ], key_len[ i ], hash );
 
-		key_string *out = (key_string *)memalloc.alloc( 4 + 2 + alloc_len );
-		if ( !out )
-			throw std::bad_alloc();
-
-		out->hash = k->hash;
-		if ( strlen < 0x7fff )
-			out->len = strlen;
-		else
-			out->len = 0x7fff;
-		memcpy( out->strptr(), k->strptr(), strlen );
-		if ( strlen >= 0x7fff )
-			out->strptr()[ strlen ] = 0;
-
-		return out;
-	}
-
-	// return the pointer for a given key, allocate it if necessary
-	// sets *first = 1 if a new buffer was allocated
-	// if so, all keys were copied using alloc_copy_key
-	u_data *aggreg_find_or_create( u_data *key, int *first )
-	{
-		u_data_aggreg::const_iterator it = aggreg.find( key );
-		if ( it != aggreg.end() )
-			return *it;
+		hash_element *ret = u_data_aggreg.find( hash, key, key_len );
+		if ( ret )
+			return ret;
 
 		*first = 1;
 
-		u_data *val = (u_data *)memalloc.alloc( sizeof(u_data) * conf.size() );
-
-		if ( !val )
+		ret = (hash_element *)memalloc.alloc( sizeof(uint64_t) + conf.size() * sizeof(u_data), sizeof(void*) );
+		if ( !ret )
 			// TODO return NULL & dump partial content ?
 			throw std::bad_alloc();
 
-		for ( unsigned i = 0 ; i < conf_keys.size() ; ++i )
-			val[ conf_keys[ i ] ].key = alloc_copy_key( key[ conf_keys[ i ] ].key );
+		ret->hash = hash;
 
-		aggreg.insert( val );
+		// copy keys
+		for ( unsigned i = 0 ; i < key.size() ; ++i )
+		{
+			if ( key[ i ] )
+			{
+				char *ptr = (char *)memalloc.alloc( key_len[ i ] + 1, 1 );
+				if ( !ptr )
+					throw std::bad_alloc();
 
-		return val;
+				memcpy( ptr, key[ i ], key_len[ i ] );
+				ptr[ key_len[ i ] ] = 0;
+				ret->list[ i ].key = ptr;
+			}
+		}
+
+		u_data_aggreg.insert( ret );
+
+		return ret;
 	}
+
 
 public:
 	explicit csv_aggreg ( const std::string &bigtmp_directory = "", unsigned line_max = 64*1024 ) :
 		memalloc( bigtmp_directory ),
-		line_max(line_max),
-		aggreg(10, f_hash(this), f_equal(this))
+		line_max(line_max)
 	{
 	}
 
@@ -726,7 +848,6 @@ public:
 		char c = 0;
 
 		conf.clear();
-		conf_keys.clear();
 
 		for ( i = 0 ; i < aggreg_str.size() ; ++i )
 		{
@@ -833,10 +954,6 @@ public:
 			return 1;
 		}
 
-		for ( unsigned i = 0 ; i < conf.size() ; ++i )
-			if ( conf[ i ].aggregator->key )
-				conf_keys.push_back( i );
-
 		return 0;
 	}
 
@@ -844,86 +961,125 @@ public:
 	// read an input file, aggregate the data inside into the global aggregation structure
 	void aggregate( const char *filename )
 	{
-		csv_reader *reader = start_reader_aggreg( filename );
+		// internal cache: maps input column indexes to a vector of output columns (NULL if input col is unused)
+		std::vector< std::vector< struct aggreg_col * > > inv_conf;
+		// points to aggreg_cols not listed in inv_conf (ie not linked to an input column)
+		std::vector< struct aggreg_col * > inv_conf_other;
+
+		csv_reader *reader = start_reader_aggreg( filename, inv_conf, inv_conf_other );
 		if ( !reader )
 			return;
 
-		// for each input column, hold either the unescaped field or an empty string (if the column is not needed)
-		std::vector< std::string > elems;
-		elems.resize( inv_conf.size() );
+		// hold unescaped field values for the current line
+		std::vector< char * > field( inv_conf.size() );
+		std::vector< size_t > field_len( inv_conf.size() );
 
-		// for each input column, set to 1 if the column is used as a key for the aggregation
-		std::vector< int > key_col;
-		key_col.resize( inv_conf.size() );
+		// hold unescaped key data for the current line
+		std::vector< char * > key( conf.size() );
+		std::vector< size_t > key_len( conf.size() );
 
-		for ( unsigned i = 0 ; i < inv_conf.size() ; ++i )
-			for ( unsigned j = 0 ; j < inv_conf[ i ].size() ; ++j )
-				if ( inv_conf[ i ][ j ]->aggregator->key )
-					key_col[ i ] = 1;
+		// current line csv fields
+		char *line = NULL;
+		std::vector< unsigned > field_off( inv_conf.size() );
 
-		// we store here the current csv line keys
-		u_data cur_data[ conf.size() ];
-		for ( unsigned i = 0 ; i < conf_keys.size() ; ++i )
-			cur_data[ conf_keys[ i ] ].key = new key_string;
+		// hold pointers to string that were allocated for unescaping (unusual) ; to be freed at the end of the line
+		std::vector< std::string * > str_tofree( inv_conf.size() );
+
+		// maps input column -> output column index for keys
+		std::vector< int > key_idx( inv_conf.size(), -1 );
+		for ( unsigned i = 0 ; i < conf.size() ; ++i )
+			if ( conf[ i ].aggregator->key )
+				key_idx[ conf[ i ].input_col_idx ] = i;
 
 		do
 		{
-			// read elements we're interested in from the line
-			char *f = NULL;
+			// split line in csv fields
+			unsigned f_off = 0;
 			unsigned f_len = 0;
-			unsigned idx_in = 0;
-			while ( reader->read_csv_field( &f, &f_len ) )
+			unsigned n_fields = 0;
+			while ( reader->read_csv_field( &line, &f_off, &f_len ) )
 			{
-				if ( idx_in >= inv_conf.size() )
+				if ( n_fields >= inv_conf.size() )
 					continue;
 
-				if ( inv_conf[ idx_in ].size() )
-				{
-					char *uf = f;
-					unsigned uf_len = f_len;
-					elems[ idx_in ].clear();
-					reader->unescape_csv_field( &uf, &uf_len, &elems[ idx_in ] );
-				}
+				field_off[ n_fields ] = f_off;
+				field_len[ n_fields ] = f_len;
 
-				++idx_in;
+				++n_fields;
 			}
 
-			// populate cur_data[ keys ]
-			for ( unsigned i = 0 ; i < inv_conf.size() ; ++i )
-				if ( key_col[ i ] )
-					for ( unsigned j = 0 ; j < inv_conf[ i ].size() ; ++j )
+			if ( n_fields < inv_conf.size() )
+			{
+				unsigned snap_sz = f_off + f_len;
+				if ( snap_sz > 32 )
+					snap_sz = 32;
+				std::cerr << "Bad field count, skipping line near " << std::string( line, snap_sz ) << std::endl;
+
+				continue;
+			}
+
+			// unescape the csv fields we're interested in
+			for ( unsigned i = 0 ; i < n_fields ; ++i )
+			{
+				int ki = key_idx[ i ];
+
+				if ( ki != -1 || inv_conf[ i ].size() )
+				{
+					char *uf = line + field_off[ i ];
+					unsigned ul = field_len[ i ];
+					std::string *s = reader->unescape_csv_field( &uf, &ul );
+
+					if ( s )
 					{
-						struct aggreg_col *a = inv_conf[ i ][ j ];
-						if ( !a->aggregator->key )
-							continue;
-						a->aggregator->key( cur_data[ a->aggreg_idx ].key, elems[ i ] );
+						str_tofree[ i ] = s;
+						uf = (char *)s->data();
+						ul = s->size();
 					}
+					field[ i ] = uf;
+					field_len[ i ] = ul;
+
+					if ( ki != -1 )
+					{
+						key[ ki ] = field[ i ];
+						key_len[ ki ] = field_len[ i ];
+
+						conf[ ki ].aggregator->key( &key[ ki ], &key_len[ ki ] );
+					}
+				}
+			}
 
 			// aggregate
 			int first = 0;
-			u_data *aggreg_entry = aggreg_find_or_create( cur_data, &first );
-			for ( unsigned i = 0 ; i < inv_conf.size() ; ++i )
-				for ( unsigned j = 0 ; j < inv_conf[ i ].size() ; ++j )
+			hash_element *entry = aggreg_find_or_create( key, key_len, &first );
+
+			for ( unsigned i = 0 ; i < n_fields ; ++i )
+			{
+				// TODO aggreg( fptr, flen )
+				if ( inv_conf[ i ].size() )
 				{
-					struct aggreg_col *a = inv_conf[ i ][ j ];
-					if ( !a->aggregator->aggreg )
-						continue;
-					a->aggregator->aggreg( aggreg_entry + a->aggreg_idx, &elems[ i ], first );
+					std::string str( field[ i ], field_len[ i ] );
+					for ( unsigned j = 0 ; j < inv_conf[ i ].size() ; ++j )
+					{
+						struct aggreg_col *a = inv_conf[ i ][ j ];
+						a->aggregator->aggreg( entry->list + a->aggreg_idx, &str, first );
+					}
 				}
+
+				if ( str_tofree[ i ] )
+				{
+					delete str_tofree[ i ];
+					str_tofree[ i ] = NULL;
+				}
+			}
 
 			// aggregate output columns not in inv_conf (eg count())
 			for ( unsigned i = 0 ; i < inv_conf_other.size() ; ++i )
 			{
 				struct aggreg_col *a = inv_conf_other[ i ];
-				if ( !a->aggregator->aggreg )
-					continue;
-				a->aggregator->aggreg( aggreg_entry + a->aggreg_idx, NULL, first );
+				a->aggregator->aggreg( entry->list + a->aggreg_idx, NULL, first );
 			}
 
 		} while ( reader->fetch_line() );
-
-		for ( unsigned i = 0 ; i < conf_keys.size() ; ++i )
-			delete cur_data[ conf_keys[ i ] ].key;
 
 		delete reader;
 	}
@@ -936,47 +1092,91 @@ public:
 		if ( !reader )
 			return;
 
-		// for each input column, hold either the unescaped field or an empty string (if the column is not needed)
-		std::vector< std::string > elems;
-		elems.resize( conf.size() );
+		// hold unescaped field values for the current line
+		std::vector< char * > field( conf.size() );
+		std::vector< size_t > field_len( conf.size() );
 
-		// we store here the current csv line keys
-		u_data cur_data[ conf.size() ];
-		for ( unsigned i = 0 ; i < conf_keys.size() ; ++i )
-			cur_data[ conf_keys[ i ] ].key = new key_string;
+		// hold unescaped key data for the current line
+		std::vector< char * > key( conf.size() );
+		std::vector< size_t > key_len( conf.size() );
+
+		// current line csv fields
+		char *line = NULL;
+		std::vector< unsigned > field_off( conf.size() );
+
+		// hold pointers to string that were allocated for unescaping (unusual) ; to be freed at the end of the line
+		std::vector< std::string * > str_tofree( conf.size() );
 
 		do
 		{
 			// read fields
-			char *f = NULL;
+			unsigned f_off = 0;
 			unsigned f_len = 0;
-			unsigned idx_in = 0;
-			while ( reader->read_csv_field( &f, &f_len ) )
+			unsigned n_fields = 0;
+			while ( reader->read_csv_field( &line, &f_off, &f_len ) )
 			{
-				if ( idx_in >= conf.size() )
+				if ( n_fields >= conf.size() )
 					continue;
 
-				char *uf = f;
-				unsigned uf_len = f_len;
-				elems[ idx_in ].clear();
-				reader->unescape_csv_field( &uf, &uf_len, &elems[ idx_in ] );
-				if ( conf[ idx_in ].aggregator->key )
-					conf[ idx_in ].aggregator->key( cur_data[ idx_in ].key, elems[ idx_in ] );
+				field_off[ n_fields ] = f_off;
+				field_len[ n_fields ] = f_len;
 
-				++idx_in;
+				++n_fields;
+			}
+			if ( n_fields < conf.size() )
+			{
+				unsigned snap_sz = f_off + f_len;
+				if ( snap_sz > 32 )
+					snap_sz = 32;
+				std::cerr << "Bad field count, skipping line near " << std::string( line, snap_sz ) << std::endl;
+
+				continue;
+			}
+
+			for ( unsigned i = 0 ; i < n_fields ; ++i )
+			{
+				char *uf = line + field_off[ i ];
+				unsigned ul = field_len[ i ];
+				std::string *s = reader->unescape_csv_field( &uf, &ul );
+
+				if ( s )
+				{
+					str_tofree[ i ] = s;
+					uf = (char *)s->data();
+					ul = s->size();
+				}
+				field[ i ] = uf;
+				field_len[ i ] = ul;
+
+				if ( conf[ i ].aggregator->key )
+				{
+					key[ i ] = field[ i ];
+					key_len[ i ] = field_len[ i ];
+
+					conf[ i ].aggregator->key( &key[ i ], &key_len[ i ] );
+				}
 			}
 
 			// aggregate
 			int first = 0;
-			u_data *aggreg_entry = aggreg_find_or_create( cur_data, &first );
-			for ( unsigned i = 0 ; i < conf.size() ; ++i )
+			hash_element *entry = aggreg_find_or_create( key, key_len, &first );
+
+			for ( unsigned i = 0 ; i < n_fields ; ++i )
+			{
 				if ( conf[ i ].aggregator->merge )
-					conf[ i ].aggregator->merge( aggreg_entry + i, &elems[ i ], first );
+				{
+					std::string s( field[ i ], field_len[ i ] );
+					conf[ i ].aggregator->merge( entry->list + i, &s, first );
+				}
+
+				if ( str_tofree[ i ] )
+				{
+					delete str_tofree[ i ];
+					str_tofree[ i ] = NULL;
+				}
+			}
 
 		} while ( reader->fetch_line() );
-
-		for ( unsigned i = 0 ; i < conf_keys.size() ; ++i )
-			delete cur_data[ conf_keys[ i ] ].key;
 
 		delete reader;
 	}
@@ -992,13 +1192,14 @@ public:
 		{
 			if ( i > 0 )
 				outbuf.append( ',' );
+
 			outbuf.append( '"' );
 			outbuf.append( conf[ i ].outname );
 			outbuf.append( '"' );
 		}
 		outbuf.append_nl();
 
-		for ( u_data_aggreg::const_iterator it = aggreg.begin() ; it != aggreg.end() ; ++it )
+		for ( hashset::const_iterator it = u_data_aggreg.begin() ; it != u_data_aggreg.end() ; ++it )
 		{
 			for ( unsigned i = 0 ; i < conf.size() ; ++i )
 			{
@@ -1006,13 +1207,15 @@ public:
 					outbuf.append( ',' );
 
 				if ( conf[ i ].aggregator->out )
-					outbuf.append( conf[ i ].aggregator->out( *it + i ) );
+					conf[ i ].aggregator->out( it->list + i, outbuf );
 			}
 			outbuf.append_nl();
 		}
-
-		aggreg.clear();
 	}
+
+private:
+	csv_aggreg ( const csv_aggreg& );
+	csv_aggreg& operator=( const csv_aggreg& );
 };
 
 

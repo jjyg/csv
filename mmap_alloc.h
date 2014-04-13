@@ -1,3 +1,6 @@
+#ifndef MMAP_ALLOC_H
+#define MMAP_ALLOC_H
+
 #include <vector>
 #include <string>
 #include <iostream>
@@ -131,3 +134,5 @@ private:
 	mmap_alloc ( const mmap_alloc& );
 	mmap_alloc& operator=( const mmap_alloc& );
 };
+
+#endif

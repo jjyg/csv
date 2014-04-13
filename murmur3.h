@@ -1,3 +1,6 @@
+#ifndef MURMUR3_H
+#define MURMUR3_H
+
 /*
  * murmur3 hash function, combining high and low from 128-bit original hash
  */
@@ -76,3 +79,5 @@ inline uint64_t murmur3_64( const void *key, size_t len, uint64_t seed = 0 )
 
 	return h1 ^ h2;
 }
+
+#endif

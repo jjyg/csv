@@ -240,47 +240,20 @@ private:
 	 * if a node is split, update curnode (low half) and populate sibling (upper half) */
 	void *insert_rec( t_idx idx, t_node *curnode, t_node *sibling, unsigned depth )
 	{
-		if ( !depth )
+		void *ret_ptr = NULL;
+		t_idx new_idx = idx;
+		bool is_leaf = ( depth == 0 );
+
+		if ( !is_leaf )
 		{
-			t_node *leaf = curnode;
-			if ( curnode->count >= max_entry_per_node )
-			{
-				split_node( curnode, sibling, true );
-				
-				/* check if we insert into curnode or sibling */
-				if ( idx >= *node_to_idx( sibling->ptr ) )
-					leaf = sibling;
-			}
-
-			t_idx *p_idx = node_to_idx( leaf->ptr );
-			int i = binsearch_index( idx, p_idx, leaf->count );
-			if ( i < 0 )
-				i = 0;
-			if ( (unsigned)i < leaf->count && p_idx[ i ] < idx )
-				/* insert in last position */
-				++i;
-
-			if ( (unsigned)i < leaf->count )
-			{
-				/* move upper indexes to make room for idx */
-				memmove( (void *)node_to_idx(   leaf->ptr, i + 1 ), (void *)node_to_idx(   leaf->ptr, i ), sizeof(t_idx) );
-				memmove( (void *)node_to_value( leaf->ptr, i + 1 ), (void *)node_to_value( leaf->ptr, i ), value_malloc_size );
-			}
-			node_to_idx( leaf->ptr )[ i ] = idx;
-			leaf->count++;
-			return node_to_value( leaf->ptr, i );
-		}
-		else
-		{
-			t_node splitted = { NULL, 0 };
-
 			t_idx *p_idx = node_to_idx( curnode->ptr );
 			int i = binsearch_index( idx, p_idx, curnode->count );
 			if ( i < 0 )
 				i = 0;
 
+			t_node splitted = { NULL, 0 };
 			t_node *subnode = node_to_subnode( curnode->ptr, i );
-			void *ret_ptr = insert_rec( idx, subnode, &splitted, depth - 1 );
+			ret_ptr = insert_rec( idx, subnode, &splitted, depth - 1 );
 
 			/* update self.idx[ i ] */
 			t_idx sub_idx = *node_to_idx( subnode->ptr );
@@ -291,33 +264,44 @@ private:
 				return ret_ptr;
 
 			/* new subnode was allocated, insert it */
-			t_node *node = curnode;
-			t_idx newleaf_idx = *node_to_idx( splitted.ptr );
-
-			if ( curnode->count >= max_entry_per_node )
-			{
-				split_node( curnode, sibling, false );
-
-				/* check if splitted should be inserted in curnode or in sibling */
-				if ( *node_to_idx( sibling->ptr ) >= newleaf_idx )
-					node = sibling;
-			}
-
-			p_idx = node_to_idx( node->ptr );
-			i = binsearch_index( newleaf_idx, p_idx, node->count );
-			if ( i < 0 )
-				i = 0;
-			if ( (unsigned)i < node->count && p_idx[ i ] < newleaf_idx )
-				++i;
-
-			if ( (unsigned)i < node->count )
-			{
-				memmove( (void *)node_to_idx(     node->ptr, i + 1 ), (void *)node_to_idx(     node->ptr, i ), sizeof(t_idx) );
-				memmove( (void *)node_to_subnode( node->ptr, i + 1 ), (void *)node_to_subnode( node->ptr, i ), sizeof(t_node) );
-			}
-
-			return ret_ptr;
+			new_idx = *node_to_idx( splitted.ptr );
 		}
+
+		t_node *node = curnode;
+		if ( curnode->count >= max_entry_per_node )
+		{
+			split_node( curnode, sibling, is_leaf );
+
+			/* check if we insert into curnode or sibling */
+			if ( new_idx >= *node_to_idx( sibling->ptr ) )
+				node = sibling;
+		}
+
+		t_idx *p_idx = node_to_idx( node->ptr );
+		int i = binsearch_index( new_idx, p_idx, node->count );
+		if ( i < 0 )
+			i = 0;
+		if ( (unsigned)i < node->count && p_idx[ i ] < new_idx )
+			/* insert in last position */
+			++i;
+
+		if ( (unsigned)i < node->count )
+		{
+			/* move upper indexes to make room for idx */
+			memmove( (void *)node_to_idx( node->ptr, i + 1 ), (void *)node_to_idx( node->ptr, i ), sizeof(t_idx) );
+			if ( is_leaf )
+				memmove( (void *)node_to_value( node->ptr, i + 1 ), (void *)node_to_value( node->ptr, i ), value_malloc_size );
+			else
+				memmove( (void *)node_to_subnode( node->ptr, i + 1 ), (void *)node_to_subnode( node->ptr, i ), sizeof(t_node) );
+		}
+
+		node_to_idx( node->ptr )[ i ] = new_idx;
+		node->count++;
+
+		if ( is_leaf )
+			ret_ptr = node_to_value( node->ptr, i );
+
+		return ret_ptr;
 	}
 
 public:

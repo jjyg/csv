@@ -18,8 +18,13 @@
 class mmap_alloc
 {
 private:
+	struct chunk_descriptor {
+		void *ptr;
+		size_t size;
+	};
+
 	std::string directory;
-	std::vector<size_t *> chunks;
+	std::vector< chunk_descriptor > chunks;
 	size_t last_alloc_sz;
 	size_t min_alloc_sz;
 	size_t max_alloc_sz;
@@ -29,14 +34,16 @@ private:
 
 	int alloc_new_chunk( size_t want )
 	{
+		chunk_descriptor descr;
+
 		if ( last_alloc_sz < min_alloc_sz )
 			last_alloc_sz = min_alloc_sz;
 		else if ( last_alloc_sz < max_alloc_sz )
 			last_alloc_sz *= 2;
 
-		size_t alloc_sz = last_alloc_sz;
-		if ( alloc_sz < want + sizeof(size_t) )
-			alloc_sz = want + sizeof(size_t);
+		descr.size = last_alloc_sz;
+		if ( descr.size < want + sizeof(size_t) )
+			descr.size = want + sizeof(size_t);
 
 		int fd = -1;
 		int flags = MAP_PRIVATE | MAP_ANONYMOUS;
@@ -61,7 +68,7 @@ private:
 			}
 
 			// set the file size
-			lseek( fd, alloc_sz-1, SEEK_SET );
+			lseek( fd, descr.size-1, SEEK_SET );
 			if ( write( fd, "", 1 ) != 1 )
 			{
 				std::cerr << "mmap_alloc: cannot allocate new file: " << strerror( errno ) << std::endl;
@@ -72,8 +79,8 @@ private:
 			flags = MAP_SHARED;
 		}
 
-		size_t *chunk = (size_t *)mmap( NULL, alloc_sz, PROT_READ | PROT_WRITE, flags, fd, 0 );
-		if ( chunk == MAP_FAILED )
+		descr.ptr = mmap( NULL, descr.size, PROT_READ | PROT_WRITE, flags, fd, 0 );
+		if ( descr.ptr == MAP_FAILED )
 		{
 			std::cerr << "mmap_alloc: cannot mmap: " << strerror( errno ) << std::endl;
 			if ( fd != -1 )
@@ -83,14 +90,12 @@ private:
 		if ( fd != -1 )
 			close( fd );
 
-		// store the chunk size at the beginning of the chunk, for munmap()
-		*chunk = alloc_sz;
-		chunks.push_back( chunk );
+		chunks.push_back( descr );
 
 		// setup vars used by alloc()
-		cur_chunk = (char *)chunk;
-		next_alloc_offset = sizeof(size_t);
-		cur_chunk_left = alloc_sz - next_alloc_offset;
+		cur_chunk = (char *)descr.ptr;
+		next_alloc_offset = 0;
+		cur_chunk_left = descr.size;
 
 		return 0;
 	}
@@ -110,7 +115,7 @@ public:
 	~mmap_alloc()
 	{
 		for ( unsigned i = 0 ; i < chunks.size() ; ++i )
-			munmap( (void*)chunks[ i ], *chunks[ i ] );
+			munmap( chunks[ i ].ptr, chunks[ i ].size );
 	}
 
 	void *alloc( size_t size, size_t align )

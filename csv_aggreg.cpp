@@ -17,15 +17,6 @@
 
 #define CSV_AGGREG_VERSION "20140410"
 
-static std::string str_downcase( const std::string &str )
-{
-	std::string ret;
-	for ( unsigned i = 0 ; i < str.size() ; ++i )
-		ret.push_back( tolower( str[ i ] ) );
-	return ret;
-}
-
-
 /*
  * holds all possible forms of aggregation fields ; update as needed if you add aggregators
  */
@@ -473,6 +464,14 @@ private:
 				return aggreg_descriptors + j;
 
 		return NULL;
+	}
+
+	std::string str_downcase( const std::string &str )
+	{
+		std::string ret;
+		for ( unsigned i = 0 ; i < str.size() ; ++i )
+			ret.push_back( tolower( str[ i ] ) );
+		return ret;
 	}
 
 	// create a csv_reader for aggregation, read headerline, setup caches from aggreg_conf

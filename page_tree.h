@@ -240,7 +240,7 @@ private:
 	 * if a node is split, update curnode (low half) and populate sibling (upper half) */
 	void *insert_rec( t_idx idx, t_node *curnode, t_node *sibling, unsigned depth )
 	{
-		void *ret_ptr = NULL;
+		void *value_ptr = NULL;
 		t_idx new_idx = idx;
 		bool is_leaf = ( depth == 0 );
 
@@ -253,7 +253,7 @@ private:
 
 			t_node splitted = { NULL, 0 };
 			t_node *subnode = node_to_subnode( curnode->ptr, i );
-			ret_ptr = insert_rec( idx, subnode, &splitted, depth - 1 );
+			value_ptr = insert_rec( idx, subnode, &splitted, depth - 1 );
 
 			/* update self.idx[ i ] */
 			t_idx sub_idx = *node_to_idx( subnode->ptr );
@@ -261,7 +261,7 @@ private:
 				p_idx[ i ] = sub_idx;
 
 			if ( !splitted.ptr )
-				return ret_ptr;
+				return value_ptr;
 
 			/* new subnode was allocated, insert it */
 			new_idx = *node_to_idx( splitted.ptr );
@@ -299,9 +299,9 @@ private:
 		node->count++;
 
 		if ( is_leaf )
-			ret_ptr = node_to_value( node->ptr, i );
+			value_ptr = node_to_value( node->ptr, i );
 
-		return ret_ptr;
+		return value_ptr;
 	}
 
 public:
@@ -332,15 +332,25 @@ public:
 	void *insert( t_idx idx )
 	{
 		t_node newnode = { NULL, 0 };
-		void *ptr = insert_rec( idx, &tree_root, &newnode, tree_depth );
+		void *value_ptr = insert_rec( idx, &tree_root, &newnode, tree_depth );
 
 		if ( newnode.ptr )
 		{
 			/* increase tree depth */
+			void *newroot = alloc_node_page();
+
+			node_to_idx( newroot )[ 0 ] = node_to_idx( tree_root.ptr )[ 0 ];
+			node_to_subnode( newroot )[ 0 ] = tree_root;
+			node_to_idx( newroot )[ 1 ] = node_to_idx( newnode.ptr )[ 0 ];
+			node_to_subnode( newroot )[ 1 ] = newnode;
+
+			tree_root.ptr = newroot;
+			tree_root.count = 2;
+
 			++tree_depth;
 		}
 
-		return ptr;
+		return value_ptr;
 	}
 
 private:

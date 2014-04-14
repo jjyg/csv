@@ -415,9 +415,9 @@ private:
 			if ( key[ i ] )
 				hash = murmur3_64( key[ i ], key_len[ i ], hash );
 
-		unsigned sub_idx = 0;
+		void *iter = NULL;
 		u_data *p;
-		while ( ( p = (u_data *)u_data_aggreg.find( hash, sub_idx++ ) ) )	/* TODO optimize find() */
+		while ( ( p = (u_data *)u_data_aggreg.find( hash, &iter ) ) )
 		{
 			/* check for collisions */
 			bool match = true;

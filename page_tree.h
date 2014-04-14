@@ -132,69 +132,31 @@ private:
 		}
 	}
 
-	/* find_rec: returns the pointer to the value with idx/sub_idx */
-	void *find_rec( t_idx idx, int &sub_idx, void *ptr, unsigned count, unsigned depth )
+	/* find_rec: create an iterator (list of index, per depth) for a hash value ; return the 1st associated value */
+	void *find_rec( std::vector< unsigned > *iter, unsigned depth, t_idx idx, t_node *curnode )
 	{
 		/*
 		 * we are called with a ptr to the t_node whose idx is the largest <= idx among its siblings
 		 * so we know that idx is in this node but not in its following sibling (ie if cur.max_idx < idx, we can return NULL)
-		 * the only exception is if the current node is full of idx *and* sub_idx is too big
-		 * in this case, we return after decreasing the sub_idx reference, in order to backtrack to the next sibling
 		 */
 
-		t_idx *p_idx = node_to_idx( ptr );
-		int i = binsearch_index( idx, p_idx, count );
+		t_idx *p_idx = node_to_idx( curnode->ptr );
+		int i = binsearch_index( idx, p_idx, curnode->count );
 		if ( i < 0 )
 			return NULL;
 
-		if ( p_idx[ i ] == idx )
+		(*iter)[ depth ] = i;
+
+		void *p = NULL;
+		if ( depth == tree_depth )
 		{
-			/* handle sub_idx mess */
-			if ( !depth )
-			{
-				if ( (unsigned)sub_idx < count - i )
-				{
-					/* at leaf, sub_idx is within bounds */
-					i += sub_idx;
-					if ( p_idx[ i ] == idx )
-						return node_to_value( ptr, i );
-
-					/* tell parent to not bother with siblings */
-					sub_idx = -1;
-					return NULL;
-				}
-
-				/* at leaf, sub_idx points to after our end: tell our caller to retry at its i+1 */
-				sub_idx -= count - i;
-				return NULL;
-			}
-			else
-			{
-				for ( ; (unsigned)i < count && p_idx[ i ] == idx ; ++i )
-				{
-					struct t_node *n = node_to_subnode( ptr, i );
-					void *p = find_rec( idx, sub_idx, n->ptr, n->count, depth - 1 );
-					if ( p )
-						return p;
-					if ( sub_idx < 0 )
-						return NULL;
-				}
-
-				return NULL;
-			}
+			if ( p_idx[ i ] == idx )
+				p = node_to_value( curnode->ptr, i );
 		}
 		else
-		{
-			if ( !depth )
-			{
-				return NULL;
-			}
-			else
-			{
-				struct t_node *n = node_to_subnode( ptr, i );
-				return find_rec( idx, sub_idx, n->ptr, n->count, depth - 1 ); 
-			}
-		}
+			p = find_rec( iter, depth + 1, idx, node_to_subnode( curnode->ptr, i ) );
+
+		return p;
 	}
 
 	/* split a leaf in two
@@ -339,16 +301,6 @@ public:
 	}
 
 	/*
-	 * look for the value associated to an index
-	 * sub_idx = return nth pointer with the same index
-	 * TODO iter_next style function instead
-	 */
-	void *find( t_idx idx, int sub_idx=0 )
-	{
-		return find_rec( idx, sub_idx, tree_root.ptr, tree_root.count, tree_depth );
-	}
-
-	/*
 	 * insert a new entry, allocates the value
 	 * returns the pointer to the value
 	 */
@@ -377,7 +329,7 @@ public:
 	}
 
 	/* when called with a NULL iterator, return the first value of the tree and create iter
-	 * when called with a non-NULL iterator issued from a previous call, returns the next value in the tree
+	 * when called with a non-NULL iterator issued from a previous call, returns the next value in the tree (ordered by index)
 	 * returns NULL after the tree has been traversed (frees iter)
 	 * do not insert new values during an iteration */
 	void *iter_next( void **raw_iter )
@@ -429,6 +381,55 @@ public:
 				else
 					node = node_to_subnode( node->ptr, (*iter)[ i ] );
 			}
+		}
+	}
+
+
+	/* same as iter_next, but returns only entries for a given hash */
+	void *find( t_idx idx, void **raw_iter = NULL )
+	{
+		std::vector< unsigned > *iter = NULL;
+		if ( raw_iter )
+			iter = *(std::vector< unsigned > **)raw_iter;
+
+		if ( !iter )
+		{
+			/* return 1st match */
+			iter = new std::vector< unsigned >( tree_depth + 1, 0 );
+			void *out = find_rec( iter, 0, idx, &tree_root );
+			if ( !out )
+			{
+				delete iter;
+				return NULL;
+			}
+
+			if ( raw_iter )
+				*raw_iter = (void *)iter;
+
+			return out;
+		}
+		else
+		{
+			/* fetch next match, check idx */
+			void *out = iter_next( raw_iter );
+			if ( !out )
+				return NULL;
+
+			t_node *node = &tree_root;
+			iter = *(std::vector< unsigned > **)raw_iter;
+			for ( unsigned i = 0 ; i < tree_depth ; ++i )
+				node = node_to_subnode( node->ptr, (*iter)[ i ] );
+
+			if ( idx == *node_to_idx( node->ptr, (*iter)[ tree_depth ] ) )
+				/* same index */
+				return out;
+
+			/* bad index, end iteration */
+			delete iter;
+			if ( raw_iter )
+				*raw_iter = NULL;
+
+			return NULL;
 		}
 	}
 

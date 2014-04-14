@@ -415,9 +415,10 @@ private:
 			if ( key[ i ] )
 				hash = murmur3_64( key[ i ], key_len[ i ], hash );
 
-		void *iter = NULL;
+		uint16_t iter[8];
+		u_data_aggreg.iter_init_hash( hash, iter, 8 );
 		u_data *p;
-		while ( ( p = (u_data *)u_data_aggreg.find( hash, &iter ) ) )
+		while ( ( p = (u_data *)u_data_aggreg.iter_next_hash( hash, iter ) ) )
 		{
 			/* check for collisions */
 			bool match = true;
@@ -431,10 +432,7 @@ private:
 				}
 
 			if ( match )
-			{
-				u_data_aggreg.iter_free( &iter );
 				return p;
-			}
 		}
 
 		/* create new entry */
@@ -837,9 +835,10 @@ public:
 		}
 		outbuf.append_nl();
 
-		void *iter = NULL;
+		uint16_t iter[8];
+		u_data_aggreg.iter_init( iter, 8 );
 		u_data *p;
-		while ( ( p = (u_data *)u_data_aggreg.iter_next( &iter ) ) )
+		while ( ( p = (u_data *)u_data_aggreg.iter_next( iter ) ) )
 		{
 			for ( unsigned i = 0 ; i < conf.size() ; ++i )
 			{

@@ -230,7 +230,7 @@ private:
 			new_node->ptr = alloc_node_page();
 
 		/* move indexes */
-		memmove( new_node->ptr, old_node->ptr, new_node->count * sizeof(t_idx) );
+		memmove( new_node->ptr, (void *)node_to_idx( old_node->ptr, split_idx ), new_node->count * sizeof(t_idx) );
 
 		/* move values */
 		if ( is_leaf )
@@ -247,6 +247,7 @@ private:
 		void *value_ptr = NULL;
 		t_idx new_idx = idx;
 		bool is_leaf = ( depth == 0 );
+		t_node splitted;
 
 		if ( !is_leaf )
 		{
@@ -255,8 +256,9 @@ private:
 			if ( i < 0 )
 				i = 0;
 
-			t_node splitted = { NULL, 0 };
 			t_node *subnode = node_to_subnode( curnode->ptr, i );
+			splitted.ptr = NULL;
+			splitted.count = 0;
 			value_ptr = insert_rec( idx, subnode, &splitted, depth - 1 );
 
 			/* update self.idx[ i ] */
@@ -271,6 +273,7 @@ private:
 			new_idx = *node_to_idx( splitted.ptr );
 		}
 
+		/* insert new entry in node */
 		t_node *node = curnode;
 		if ( curnode->count >= max_entry_per_node )
 		{
@@ -292,18 +295,20 @@ private:
 		if ( (unsigned)i < node->count )
 		{
 			/* move upper indexes to make room for idx */
-			memmove( (void *)node_to_idx( node->ptr, i + 1 ), (void *)node_to_idx( node->ptr, i ), sizeof(t_idx) );
+			memmove( (void *)node_to_idx( node->ptr, i + 1 ), (void *)node_to_idx( node->ptr, i ), ( node->count - i ) * sizeof(t_idx) );
 			if ( is_leaf )
-				memmove( (void *)node_to_value( node->ptr, i + 1 ), (void *)node_to_value( node->ptr, i ), value_malloc_size );
+				memmove( (void *)node_to_value( node->ptr, i + 1 ), (void *)node_to_value( node->ptr, i ), ( node->count - i ) * value_malloc_size );
 			else
-				memmove( (void *)node_to_subnode( node->ptr, i + 1 ), (void *)node_to_subnode( node->ptr, i ), sizeof(t_node) );
+				memmove( (void *)node_to_subnode( node->ptr, i + 1 ), (void *)node_to_subnode( node->ptr, i ), ( node->count - i ) * sizeof(t_node) );
 		}
 
-		node_to_idx( node->ptr )[ i ] = new_idx;
 		node->count++;
+		node_to_idx( node->ptr )[ i ] = new_idx;
 
 		if ( is_leaf )
 			value_ptr = node_to_value( node->ptr, i );
+		else
+			*node_to_subnode( node->ptr, i ) = splitted;
 
 		return value_ptr;
 	}

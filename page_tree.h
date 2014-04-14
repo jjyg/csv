@@ -309,12 +309,25 @@ private:
 	}
 
 public:
-	explicit page_tree( unsigned value_malloc_size, const std::string &mmap_dir ) :
-		value_malloc_size(value_malloc_size),
+	explicit page_tree( const std::string &mmap_dir ) :
+		value_malloc_size(0),
 		mm_nodes(""),
 		mm_leaves(mmap_dir),
 		max_entry_per_node(4096 / sizeof(t_idx))
 	{
+		tree_root.ptr = NULL;
+		tree_root.count = 0;
+		tree_depth = 0;
+	}
+
+	/*
+	 * sets the size in bytes of every value of the tree
+	 * must be called before any insertion in the tree
+	 * shall not be called after any insertion (resets the tree & leaks old memory)
+	 */
+	void set_value_size( unsigned sz )
+	{
+		value_malloc_size = sz;
 		tree_root.ptr = alloc_leaf_page();
 		tree_root.count = 0;
 		tree_depth = 0;
@@ -323,6 +336,7 @@ public:
 	/*
 	 * look for the value associated to an index
 	 * sub_idx = return nth pointer with the same index
+	 * TODO iter_next style function instead
 	 */
 	void *find( t_idx idx, int sub_idx=0 )
 	{
@@ -343,10 +357,10 @@ public:
 			/* increase tree depth */
 			void *newroot = alloc_node_page();
 
-			node_to_idx( newroot )[ 0 ] = node_to_idx( tree_root.ptr )[ 0 ];
-			node_to_subnode( newroot )[ 0 ] = tree_root;
-			node_to_idx( newroot )[ 1 ] = node_to_idx( newnode.ptr )[ 0 ];
-			node_to_subnode( newroot )[ 1 ] = newnode;
+			*node_to_idx( newroot, 0 ) = *node_to_idx( tree_root.ptr );
+			*node_to_subnode( newroot, 0 ) = tree_root;
+			*node_to_idx( newroot, 1 ) = *node_to_idx( newnode.ptr );
+			*node_to_subnode( newroot, 1 ) = newnode;
 
 			tree_root.ptr = newroot;
 			tree_root.count = 2;
@@ -363,18 +377,22 @@ public:
 	 * do not insert new values during an iteration */
 	void *iter_next( void **raw_iter )
 	{
-		std::vector< unsigned > *iter = (std::vector< unsigned > *)*raw_iter;
+		std::vector< unsigned > *iter = NULL;
+		if ( raw_iter )
+			iter = *(std::vector< unsigned > **)raw_iter;
+
 		if ( !iter )
 		{
 			iter = new std::vector< unsigned >( tree_depth + 1, 0 );
-			*raw_iter = (void *)iter;
+			if ( raw_iter )
+				*raw_iter = (void *)iter;
 		}
 		else
 		{
-			if ( iter.size() != tree_depth + 1 )
+			if ( iter->size() != tree_depth + 1 )
 				return NULL;
 
-			iter[ iter.size() - 1 ] += 1;
+			(*iter)[ iter->size() - 1 ] += 1;
 		}
 
 		for (;;)
@@ -382,28 +400,29 @@ public:
 			t_node *node = &tree_root;
 			for ( unsigned i = 0 ; i <= tree_depth ; ++i )
 			{
-				if ( iter[ i ] >= node->count )
+				if ( (*iter)[ i ] >= node->count )
 				{
 					if ( i == 0 )
 					{
 						delete iter;
-						*raw_iter = NULL;
+						if ( raw_iter )
+							*raw_iter = NULL;
 
 						return NULL;
 					}
 
 					/* propagate carry, retry */
-					iter[ i - 1 ] += 1;
+					(*iter)[ i - 1 ] += 1;
 					for ( unsigned j = i ; j <= tree_depth ; ++j )
-						iter[ j ] = 0;
+						(*iter)[ j ] = 0;
 
 					break;
 				}
 
 				if ( i == tree_depth )
-					return node_to_value( node->ptr, iter[ i ] );
+					return node_to_value( node->ptr, (*iter)[ i ] );
 				else
-					node = node_to_subnode( node->ptr, iter[ i ] );
+					node = node_to_subnode( node->ptr, (*iter)[ i ] );
 			}
 		}
 	}

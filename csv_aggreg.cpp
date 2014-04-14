@@ -14,8 +14,9 @@
 #include "csv_reader.h"
 #include "mmap_alloc.h"
 #include "murmur3.h"
+#include "page_tree.h"
 
-#define CSV_AGGREG_VERSION "20140410"
+#define CSV_AGGREG_VERSION "20140414"
 
 /*
  * holds all possible forms of aggregation fields ; update as needed if you add aggregators
@@ -252,179 +253,6 @@ struct aggreg_descriptor {
 
 #define aggreg_descriptors_count ( sizeof(aggreg_descriptors) / sizeof(aggreg_descriptors[0]) )
 
-/*
- * an entry in the aggregation hash set
- * corresponds to one output line
- */
-struct hash_element
-{
-	uint64_t hash;
-	u_data list[];
-};
-
-
-/*
- * a hash set with low memory overhead
- * insert-only, does not support element deletion
- * actually an array of hash_elements, with quadratic probing (loosely inspired from google sparsehash)
- */
-class hashset
-{
-private:
-	uint64_t n_elements;	/* size of the array */
-	uint64_t n_elements_inuse;	/* number of elements in use ; should stay < 0.7*n_elements */
-	// TODO split this table if it becomes too large
-	hash_element **table;
-
-public:
-	explicit hashset( uint64_t nelem = 1024 )
-	{
-		n_elements = nelem;
-		n_elements_inuse = 0;
-		table = (hash_element **)malloc( nelem * sizeof(*table) );
-		if ( !table )
-			throw std::bad_alloc();
-		memset( table, 0, nelem * sizeof(*table) );
-	}
-
-	~hashset()
-	{
-		free( table );
-	}
-
-	friend struct const_iterator;
-	struct const_iterator
-	{
-		const hashset *hash;
-		uint64_t idx;
-
-		explicit const_iterator( const hashset *hash = NULL, uint64_t idx = 0 ) : hash( hash ), idx( idx ) {}
-
-		hash_element * operator->() const { return hash->table[ idx ]; }
-
-		bool operator==(const const_iterator& it) const { return hash == it.hash && idx == it.idx; }
-		bool operator!=(const const_iterator& it) const { return !(*this == it); }
-
-		const_iterator & operator++()
-		{
-			while ( ++idx < hash->n_elements )
-				if ( hash->table[ idx ] )
-					break;
-			return *this;
-		}
-	};
-
-	const_iterator begin() const
-	{
-		const_iterator it( this, 0 );
-		if ( !table[ 0 ] )
-			++it;
-		return it;
-	}
-
-	const_iterator end() const
-	{
-		return const_iterator( this, n_elements );
-	}
-
-	void resize( uint64_t new_nelem )
-	{
-		hash_element **new_table = (hash_element **)malloc( new_nelem * sizeof(*table) );
-		if ( !new_table )
-			throw std::bad_alloc();
-
-		memset( new_table, 0, new_nelem * sizeof(*table) );
-
-		for ( uint64_t i = 0 ; i < n_elements ; ++i )
-			if ( table[ i ] )
-			{
-				uint64_t idx = table[ i ]->hash;
-				for ( unsigned quad_probe = 0 ; quad_probe < n_elements_inuse ; idx += ++quad_probe )
-				{
-					hash_element **cur = &new_table[ idx % new_nelem ];
-					if ( !*cur )
-					{
-						*cur = table[ i ];
-						break;
-					}
-				}
-			}
-
-		free( table );
-		table = new_table;
-		n_elements = new_nelem;
-	}
-
-	/* look for an entry with a given hash / set of keys, return it or NULL
-	 * keys should be in the same order as hash_elem->list, and hold non-NULL for every key
-	 */
-	hash_element *find( uint64_t hash, const std::vector<char *> key, const std::vector< size_t > key_len )
-	{
-		uint64_t idx = hash;
-
-		// use arbitrary upper bound to avoid infinite loops with full table ; should never happen unless table is too full
-		for ( unsigned quad_probe = 0 ; quad_probe < n_elements_inuse + 1 ; idx += ++quad_probe )
-		{
-			hash_element *cur = table[ idx % n_elements ];
-			if ( !cur )
-				// end of collision list
-				return NULL;
-
-			if ( cur->hash == hash )
-			{
-				// check for hash collisions
-				bool same = true;
-				for ( unsigned i = 0 ; same && i < key.size() ; ++i )
-					if ( key[ i ] )
-					{
-						size_t sz = strlen( cur->list[ i ].key );
-						if ( key_len[ i ] != sz ||
-						     memcmp( key[ i ], cur->list[ i ].key, sz ) != 0 )
-							same = false;
-					}
-
-				if ( same )
-					return cur;
-			}
-		}
-
-		std::cerr << "hash table failed ! (find)" << std::endl;
-		// XXX resize( 2*n_elements ) ?
-
-		return NULL;
-	}
-
-	/* inserts a new entry
-	 * may trigger a resize( 2*oldsize )
-	 * does not check for a pre-existing entry with the same key, only use after find_entry returned NULL */
-	void insert( hash_element *entry )
-	{
-		uint64_t idx = entry->hash;
-		++n_elements_inuse;
-
-		if ( n_elements_inuse > n_elements * 7 / 10 )
-			resize( n_elements * 2 );
-
-		for ( unsigned quad_probe = 0 ; quad_probe < n_elements_inuse ; idx += ++quad_probe )
-		{
-			hash_element **cur = &table[ idx % n_elements ];
-			if ( !*cur )
-			{
-				*cur = entry;
-				return;
-			}
-		}
-
-		std::cerr << "hash table failed ! (insert)" << std::endl;
-		// XXX
-	}
-
-private:
-	hashset ( const hashset& );
-	hashset& operator=( const hashset& );
-};
-
-
 class csv_aggreg
 {
 private:
@@ -454,7 +282,7 @@ private:
 	std::vector< struct aggreg_col > conf;
 
 	// aggregated data store
-	hashset u_data_aggreg;
+	page_tree u_data_aggreg;
 
 	// find an aggregator struct by name (eg "count", "min"...)
 	struct aggreg_descriptor *find_aggregator( const std::string &name )
@@ -580,29 +408,39 @@ private:
 	 * sets *first = 1 if a new buffer was allocated
 	 * copies keys bytes to memalloc
 	 */
-	hash_element *aggreg_find_or_create( const std::vector< char * > key, const std::vector< size_t > key_len, int *first )
+	u_data *aggreg_find_or_create( const std::vector< char * > key, const std::vector< size_t > key_len, int *first )
 	{
 		uint64_t hash = 0;
 		for ( unsigned i = 0 ; i < key.size() ; ++i )
 			if ( key[ i ] )
 				hash = murmur3_64( key[ i ], key_len[ i ], hash );
 
-		hash_element *ret = u_data_aggreg.find( hash, key, key_len );
-		if ( ret )
-			return ret;
+		unsigned sub_idx = 0;
+		u_data *p;
+		while ( ( p = (u_data *)u_data_aggreg.find( hash, sub_idx++ ) ) )	/* TODO optimize find() */
+		{
+			/* check for collisions */
+			bool match = true;
 
+			for  ( unsigned i = 0 ; match && i < key.size() ; ++i )
+				if ( key[ i ] )
+				{
+					size_t slen = strlen( p[ i ].key );
+					if ( slen != key_len[ i ] || memcmp( p[ i ].key, key[ i ], slen ) )
+						match = false;
+				}
+
+			if ( match )
+				return p;
+		}
+
+		/* create new entry */
 		*first = 1;
 
-		ret = (hash_element *)memalloc.alloc( sizeof(uint64_t) + conf.size() * sizeof(u_data), sizeof(void*) );
-		if ( !ret )
-			// TODO return NULL & dump partial content ?
-			throw std::bad_alloc();
-
-		ret->hash = hash;
+		p = (u_data *)u_data_aggreg.insert( hash );
 
 		// copy keys
 		for ( unsigned i = 0 ; i < key.size() ; ++i )
-		{
 			if ( key[ i ] )
 			{
 				char *ptr = (char *)memalloc.alloc( key_len[ i ] + 1, 1 );
@@ -611,20 +449,18 @@ private:
 
 				memcpy( ptr, key[ i ], key_len[ i ] );
 				ptr[ key_len[ i ] ] = 0;
-				ret->list[ i ].key = ptr;
+				p[ i ].key = ptr;
 			}
-		}
 
-		u_data_aggreg.insert( ret );
-
-		return ret;
+		return p;
 	}
 
 
 public:
 	explicit csv_aggreg ( const std::string &bigtmp_directory = "", unsigned line_max = 64*1024 ) :
 		memalloc( bigtmp_directory ),
-		line_max(line_max)
+		line_max(line_max),
+		u_data_aggreg( bigtmp_directory )
 	{
 	}
 
@@ -751,6 +587,8 @@ public:
 			return 1;
 		}
 
+		u_data_aggreg.set_value_size( conf.size() * sizeof(u_data) );
+
 		return 0;
 	}
 
@@ -847,7 +685,7 @@ public:
 
 			// aggregate
 			int first = 0;
-			hash_element *entry = aggreg_find_or_create( key, key_len, &first );
+			u_data *p = aggreg_find_or_create( key, key_len, &first );
 
 			for ( unsigned i = 0 ; i < n_fields ; ++i )
 			{
@@ -858,7 +696,7 @@ public:
 					for ( unsigned j = 0 ; j < inv_conf[ i ].size() ; ++j )
 					{
 						struct aggreg_col *a = inv_conf[ i ][ j ];
-						a->aggregator->aggreg( entry->list + a->aggreg_idx, &str, first );
+						a->aggregator->aggreg( p + a->aggreg_idx, &str, first );
 					}
 				}
 
@@ -873,7 +711,7 @@ public:
 			for ( unsigned i = 0 ; i < inv_conf_other.size() ; ++i )
 			{
 				struct aggreg_col *a = inv_conf_other[ i ];
-				a->aggregator->aggreg( entry->list + a->aggreg_idx, NULL, first );
+				a->aggregator->aggreg( p + a->aggreg_idx, NULL, first );
 			}
 
 		} while ( reader->fetch_line() );
@@ -956,14 +794,14 @@ public:
 
 			// aggregate
 			int first = 0;
-			hash_element *entry = aggreg_find_or_create( key, key_len, &first );
+			u_data *p = aggreg_find_or_create( key, key_len, &first );
 
 			for ( unsigned i = 0 ; i < n_fields ; ++i )
 			{
 				if ( conf[ i ].aggregator->merge )
 				{
 					std::string s( field[ i ], field_len[ i ] );
-					conf[ i ].aggregator->merge( entry->list + i, &s, first );
+					conf[ i ].aggregator->merge( p + i, &s, first );
 				}
 
 				if ( str_tofree[ i ] )
@@ -996,7 +834,9 @@ public:
 		}
 		outbuf.append_nl();
 
-		for ( hashset::const_iterator it = u_data_aggreg.begin() ; it != u_data_aggreg.end() ; ++it )
+		void *iter = NULL;
+		u_data *p;
+		while ( ( p = (u_data *)u_data_aggreg.iter_next( &iter ) ) )
 		{
 			for ( unsigned i = 0 ; i < conf.size() ; ++i )
 			{
@@ -1004,7 +844,7 @@ public:
 					outbuf.append( ',' );
 
 				if ( conf[ i ].aggregator->out )
-					conf[ i ].aggregator->out( it->list + i, outbuf );
+					conf[ i ].aggregator->out( p + i, outbuf );
 			}
 			outbuf.append_nl();
 		}

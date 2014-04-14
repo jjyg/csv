@@ -431,7 +431,10 @@ private:
 				}
 
 			if ( match )
+			{
+				u_data_aggreg.iter_free( &iter );
 				return p;
+			}
 		}
 
 		/* create new entry */

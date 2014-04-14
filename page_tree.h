@@ -328,6 +328,18 @@ public:
 		return value_ptr;
 	}
 
+	/* release memory used by the iterator */
+	void iter_free( void **raw_iter )
+	{
+		std::vector< unsigned > *iter = NULL;
+		if ( raw_iter )
+			iter = *(std::vector< unsigned > **)raw_iter;
+		if ( iter )
+			delete iter;
+		if ( raw_iter )
+			*raw_iter = NULL;
+	}
+
 	/* when called with a NULL iterator, return the first value of the tree and create iter
 	 * when called with a non-NULL iterator issued from a previous call, returns the next value in the tree (ordered by index)
 	 * returns NULL after the tree has been traversed (frees iter)

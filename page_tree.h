@@ -1,6 +1,10 @@
 #ifndef PAGE_TREE_H
 #define PAGE_TREE_H
 
+#include <vector>
+
+#include "mmap_alloc.h"
+
 /*
  * Data structure designed to store a sparse array with low memory overhead, quick access, and limited page cache usage
  * The array indexes are uint64_t, and the structure may hold multiple values for a given index (ie it's a hash table)
@@ -351,6 +355,57 @@ public:
 		}
 
 		return value_ptr;
+	}
+
+	/* when called with a NULL iterator, return the first value of the tree and create iter
+	 * when called with a non-NULL iterator issued from a previous call, returns the next value in the tree
+	 * returns NULL after the tree has been traversed (frees iter)
+	 * do not insert new values during an iteration */
+	void *iter_next( void **raw_iter )
+	{
+		std::vector< unsigned > *iter = (std::vector< unsigned > *)*raw_iter;
+		if ( !iter )
+		{
+			iter = new std::vector< unsigned >( tree_depth + 1, 0 );
+			*raw_iter = (void *)iter;
+		}
+		else
+		{
+			if ( iter.size() != tree_depth + 1 )
+				return NULL;
+
+			iter[ iter.size() - 1 ] += 1;
+		}
+
+		for (;;)
+		{
+			t_node *node = &tree_root;
+			for ( unsigned i = 0 ; i <= tree_depth ; ++i )
+			{
+				if ( iter[ i ] >= node->count )
+				{
+					if ( i == 0 )
+					{
+						delete iter;
+						*raw_iter = NULL;
+
+						return NULL;
+					}
+
+					/* propagate carry, retry */
+					iter[ i - 1 ] += 1;
+					for ( unsigned j = i ; j <= tree_depth ; ++j )
+						iter[ j ] = 0;
+
+					break;
+				}
+
+				if ( i == tree_depth )
+					return node_to_value( node->ptr, iter[ i ] );
+				else
+					node = node_to_subnode( node->ptr, iter[ i ] );
+			}
+		}
 	}
 
 private:

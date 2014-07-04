@@ -51,6 +51,8 @@ This mode can be used to transcode files with different column separators:
 
   csv select 0- -s '\t' -S ',' foo.tsv -o foo.csv
 
+It is the only mode that will handle changing column separator correctly, by quoting every field ; other modes will leave quoting untouched (or ignore output_separator altogether) and will corrupt the file if one unquoted input field contains the output separator.
+
 Select will reorder multiple input file columns so they are coherent ; eg columns with the same name are moved to be at the same position.
 
   csv -- select - csv1.csv csv2.csv

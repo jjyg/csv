@@ -12,7 +12,7 @@
 #include "csv_reader.h"
 
 
-#define CSV_TOOL_VERSION "20140321"
+#define CSV_TOOL_VERSION "20140704"
 
 enum {
 	NO_HEADERLINE,
@@ -480,6 +480,7 @@ public:
 		unsigned idx_len = indexes.size();
 		unsigned *fld_off = new unsigned[ idx_len ];
 		unsigned *fld_len = new unsigned[ idx_len ];
+		const bool may_need_escape = ( sep_out != sep );
 
 		do
 		{
@@ -512,7 +513,14 @@ public:
 					outbuf->append( sep_out );
 
 				if ( fld_off[ idx_out ] != (unsigned)-1 )
-					outbuf->append( line + fld_off[ idx_out ], fld_len[ idx_out ] );
+				{
+					if ( may_need_escape && fld_len[ idx_out ] && ( line[ fld_off[ idx_out ] ] != quot ) )
+					{
+						std::string raw_f( line + fld_off[ idx_out ], fld_len[ idx_out ] );
+						outbuf->append( reader->escape_csv_field( raw_f ) );
+					} else
+						outbuf->append( line + fld_off[ idx_out ], fld_len[ idx_out ] );
+				}
 			}
 			outbuf->append_nl();
 

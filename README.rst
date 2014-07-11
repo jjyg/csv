@@ -19,7 +19,7 @@ Options
   -h  show help message and exit
   -o <outfile>  output to a specified file (default = stdout)
   -s  field separator (default = ',')
-  -S  output field separator (default = same as -s)
+  -S  output field separator (default = same as -s) -- should only be used with mode 'select'
   -q  quote character (default = '"')
   -L <len>  maximum line length (default = 64*1024 bytes)
   -H  do not try to parse input first line as a header
@@ -101,6 +101,15 @@ The field must match exactly the line of the file ; no regexp / substring / what
 The options -v and -i are available here. The same stuff as grepcol applies, regarding the "or" and "and" boolean operations.
 
 The wordlist is stored in a C++ unordered_set ; so it should have good matching performances, but it may not scale to very large wordlists.
+
+
+concat (c)
+----------
+
+Generate a CSV containing all the original columns, plus a new one labeled 'concat' whose value is, for each row, the concatenation of the specified fields. To add fixed values (eg separator chars), use a chain with addcol.
+
+  csv concat f1,f2 foo.csv
+  csv s - filelist.csv | csv addcol sep='/' | csv concat dirname,sep,filename | csv deselect sep
 
 
 rename

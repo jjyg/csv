@@ -12,7 +12,7 @@
 #include "csv_reader.h"
 
 
-#define CSV_TOOL_VERSION "20140704"
+#define CSV_TOOL_VERSION "20140711"
 
 enum {
 	NO_HEADERLINE,
@@ -938,6 +938,67 @@ public:
 	}
 
 
+	// output a csv containing the concatenation of the specified columns as last column
+	void concat ( const std::string &colspec, const char *filename )
+	{
+		if ( ! start_reader( colspec, filename ) )
+			return;
+
+		if ( headers )
+		{
+			for ( unsigned i = 0 ; i < headers->size() ; ++i )
+			{
+				if ( i > 0 )
+					outbuf->append( sep_out );
+
+				outbuf->append( reader->escape_csv_field( (*headers)[i] ) );
+			}
+
+			outbuf->append( sep_out );
+			outbuf->append( reader->escape_csv_field( "concat" ) );
+
+			outbuf->append_nl();
+		}
+
+		if ( reader->eos() )
+			return;
+
+		std::string *flds = new std::string[ inv_indexes.size() ];
+		std::string ccat;
+
+		do
+		{
+			char *line = NULL;
+			unsigned f_off = 0, f_len = 0;
+			unsigned idx_in = 0;
+
+			while ( reader->read_csv_field( &line, &f_off, &f_len ) )
+			{
+				if ( ( idx_in < inv_indexes.size() ) && ( inv_indexes[ idx_in ].size() ) )
+				{
+					flds[ idx_in ].clear();
+					char *ptr = line + f_off;
+					unsigned len = f_len;
+					reader->unescape_csv_field( &ptr, &len, &flds[ idx_in ] );
+				}
+				++idx_in;
+			}
+
+			outbuf->append( line, f_off + f_len );
+			outbuf->append( sep_out );
+
+			ccat.clear();
+			for ( unsigned i = 0 ; i < indexes.size() ; ++i )
+				ccat += flds[ indexes[ i ] ];
+			outbuf->append( reader->escape_csv_field( ccat ) );
+
+			outbuf->append_nl();
+		} while ( reader->fetch_line() );
+
+		delete[] flds;
+	}
+
+
 	// dump csv rows, prefix each field with its colname
 	void inspect ( const char *filename )
 	{
@@ -1218,6 +1279,7 @@ static const char *usage =
 "csv deselect <cols>          create a new csv with the specified columns removed\n"
 "csv listcol                  list csv column names, one per line\n"
 "csv inspect                  dump csv file, prefix each field with its column name\n"
+"csv concat <col1>,<col2>,... add a column with the concatenation of the specified columns\n"
 "csv rows <min>-<max>         dump selected row range from file\n"
 "csv stripheader              dump the csv files omitting the header line\n"
 "csv decimal <cols>           convert selected columns to decimal int64 representation\n"
@@ -1467,6 +1529,23 @@ int main ( int argc, char * argv[] )
 		{
 			for ( int i = optind ; i < argc ; ++i )
 				csv.fgrepcol( colval, argv[ i ] );
+		}
+	}
+	else if ( mode == "concat" || mode == "c" )
+	{
+		if ( optind >= argc )
+		{
+			std::cerr << "No colspec specified" << std::endl << usage << std::endl;
+			return EXIT_FAILURE;
+		}
+		std::string colspec = argv[ optind++ ];
+
+		if ( optind >= argc )
+			csv.concat( colspec, NULL );
+		else
+		{
+			for ( int i = optind ; i < argc ; ++i )
+				csv.concat( colspec, argv[ i ] );
 		}
 	}
 	else if ( mode == "inspect" || mode == "i" )

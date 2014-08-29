@@ -12,7 +12,7 @@
 #include "csv_reader.h"
 
 
-#define CSV_TOOL_VERSION "20140711"
+#define CSV_TOOL_VERSION "20140829"
 
 enum {
 	NO_HEADERLINE,
@@ -989,7 +989,8 @@ public:
 
 			ccat.clear();
 			for ( unsigned i = 0 ; i < indexes.size() ; ++i )
-				ccat += flds[ indexes[ i ] ];
+				if ( indexes[ i ] != -1 )
+					ccat += flds[ indexes[ i ] ];
 			outbuf->append( reader->escape_csv_field( ccat ) );
 
 			outbuf->append_nl();

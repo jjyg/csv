@@ -109,7 +109,8 @@ concat (c)
 Generate a CSV containing all the original columns, plus a new one labeled 'concat' whose value is, for each row, the concatenation of the specified fields. To add fixed values (eg separator chars), use a chain with addcol.
 
   csv concat f1,f2 foo.csv
-  csv s - filelist.csv | csv addcol sep='/' | csv concat dirname,sep,filename | csv deselect sep
+
+  csv s - filelist.csv | csv addcol sep='/' | csv concat dirname,sep,filename | csv rename concat=fullpath | csv deselect sep
 
 
 rename
@@ -147,7 +148,7 @@ Unquoted values are unchanged, quoted values are shown with the quotes unescaped
 
   csv extract row4
 
-With the special option -0, a NUL byte is appended to each field (beware, a field may already contain NUL bytes).
+With the special option -0, a NUL byte is appended to each field instead of a line feed (beware, a field may already contain NUL bytes).
 
 listcol (l)
 -----------
@@ -172,7 +173,9 @@ Generate a CSV with only a range of the input rows.
 The range is inclusive.
 
   csv rows 12-50 foo.csv
+
   csv row 4
+
   csv r 8-
 
 
@@ -187,7 +190,7 @@ decimal (dec)
 
 Convert a specific field from hexadecimal to decimal.
 The conversion is done using 64bit unsigned integers plus the sign, on hexadecimal values starting with '0x'.
-Other values, or values where the converslion failed are preserved unchanged.
+Other values, or values where the conversion failed are preserved unchanged.
 
   csv dec row4
 
@@ -215,7 +218,7 @@ Most modes of operation do not handle well multiple input files with varied colu
 
 Additionaly, most modes (except select) will not discard the header line of subsequent files from the input.
 
-The maximum line length is specified when starting the program, it may be overriden with the '-L' switch. It specifies the maximum row length in bytes.
+The maximum line length is specified when starting the program, it may be overriden with the '-L' switch. It specifies the maximum input row length in bytes.
 
 
 License

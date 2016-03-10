@@ -4,7 +4,7 @@ It is designed to aggregate multiple CSV files and generate a new one containing
 
 Usage:
 
-  ./csv-aggreg [options] <aggregation directives> [input file1 [input file 2 ...]]
+  ./csv-aggreg [options] <aggregation directives> input1.csv [input2.csv ...]
 
 The aggregation directives describe the output columns, they may be based on reprocessing of input columns or new column creation from scratch.
 
@@ -18,7 +18,7 @@ Options
   -V  show program version and exit
   -h  show help message and exit
   -o <outfile>  output to a specified file (default = stdout)
-  -L <len>  maximum line length (default = 64*1024 bytes)
+  -L <len>  maximum input line length (default = 64*1024 bytes)
   -m  input files are already outputs of csv-aggreg with the same specification
   -d <dir>  use a directory to store temporary files
 
@@ -84,27 +84,32 @@ Show the number of lines having the same aggregation key.
 Exemples
 ========
 
-input file:
+input file::
 
  $ cat in.csv
  "a","b","c"
  "a1","b1","c1"
  "a1","b2","c2"
  "a2","b3","c3"
-
-
+ 
  $ ./csv-aggreg 'a=str(a),min_b=minstr(b),top_c=top20(c)' in.csv
  "a","min_b","top_c"
  "a1","b1","c1,c2"
  "a2","b3","c3"
-
+ 	
  $ ./csv-aggreg 'a,nr=count(),min_b=minstr(b),max_b=maxstr(b)' in.csv -o out.csv
  "a","nr","min_b","max_b"
  "a1",2,"b1","b2"
  "a2",1,"b3","b3"
-
+ 
  $ ./csv-aggreg -m 'a,nr=count(),min_b=minstr(b),max_b=maxstr(b)' out.csv out.csv out.csv
  "a","nr","min_b","max_b"
  "a1",6,"b1","b2"
  "a2",3,"b3","b3"
+
+
+Hacking
+=======
+
+csv-aggreg must store the entire output data in memory at all times to be able to do aggregation. In order to minimize overhead, it uses a totally l33t custom memory allocator and hash table implementation, so that it can store lots of small strings with very little overhead (no pointers/length stored and minimal padding per string). It allows the program to use almost all available memory for customer data instead of housekeeping junk (see eg std::string for an exemple of what not to do).
 

@@ -1,10 +1,10 @@
-csv is a command-line tool to handle RFC4180 formatted streams.
+csv is a command-line tool to handle RFC4180 formatted streams (cf https://tools.ietf.org/html/rfc4180).
 
 It is designed to handle very large files with minimal CPU/memory overhead.
 
 The general mode of operation is:
 
-  ./csv [options] <mode> <mode parameters> [input file1 [input file 2 ...]]
+  ./csv [options] <mode> <mode parameters> [input1.csv [input2.csv ...]]
 
 Mode parameters usually involve column descriptors ; those can be words (as taken from the 1st "header" row of the file) or integers (1st column = 0).
 Column names are case-insensitive.
@@ -21,7 +21,7 @@ Options
   -s  field separator (default = ',')
   -S  output field separator (default = same as -s) -- should only be used with mode 'select'
   -q  quote character (default = '"')
-  -L <len>  maximum line length (default = 64*1024 bytes)
+  -L <len>  maximum input line length (default = 64*1024 bytes)
   -H  do not try to parse input first line as a header
 
 
@@ -148,7 +148,7 @@ Unquoted values are unchanged, quoted values are shown with the quotes unescaped
 
   csv extract row4
 
-With the special option -0, a NUL byte is appended to each field instead of a line feed (beware, a field may already contain NUL bytes).
+With the special option -0, a NUL byte is appended to each field instead of a line feed (beware, a field may already contain NUL bytes -- or a line feed).
 
 listcol (l)
 -----------
@@ -243,4 +243,7 @@ Modes setup may involve complex structure construction, in order to reduce later
 The memory footprint of the program does not depend on the size of the input files, it is designed to handle infinite streams.
 
 Memory allocation / copying are generally avoided: the input is read in big chunks of memory, and from then on only pointers into that chunk are manipulated.
+
+
+See also the documentation for the csv-aggreg tool at https://github.com/jjyg/csv/blob/master/README.aggreg.rst
 

@@ -569,7 +569,7 @@ public:
 
 				start_off = i + 1;
 			}
-			else if ( c != ' ' )
+			else if ( c != ' ' || tmp.size() )
 				tmp.push_back( c );
 		}
 
